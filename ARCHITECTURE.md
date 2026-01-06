@@ -9,7 +9,7 @@ This document describes the modular architecture of MoFA Studio, a desktop appli
 - **Version**: 0.1.0
 - **Edition**: Rust 2021
 - **License**: Apache-2.0
-- **Repository**: https://github.com/mofa-org/studio
+- **Repository**: https://github.com/mofa-org/mofa-studio
 - **UI Framework**: Makepad (GPU-accelerated, immediate mode)
 
 ## Directory Structure
