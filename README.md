@@ -49,6 +49,63 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.
 - **Cargo** package manager
 - **Git** for cloning the repository
 
+### Voice Chat Prerequisites
+
+To run the voice chat dataflow, you need to set up the Python environment and download the required AI models.
+
+#### 1. Environment Setup
+
+```bash
+cd models/setup-local-models
+./setup_isolated_env.sh
+```
+
+This creates a conda environment `mofa-studio` with:
+- Python 3.12
+- PyTorch 2.2.0, NumPy 1.26.4, Transformers 4.45.0
+- All voice-chat Python nodes (ASR, PrimeSpeech, Text Segmenter)
+
+Activate the environment:
+
+```bash
+conda activate mofa-studio
+python test_dependencies.py  # Verify installation
+```
+
+#### 2. Model Downloads
+
+```bash
+cd models/model-manager
+
+# ASR models (FunASR Paraformer + punctuation)
+python download_models.py --download funasr
+
+# PrimeSpeech TTS (base + voices)
+python download_models.py --download primespeech
+
+# List available voices
+python download_models.py --list-voices
+
+# Download specific voice
+python download_models.py --voice "Luo Xiang"
+```
+
+Models are stored in:
+| Location | Contents |
+|----------|----------|
+| `~/.dora/models/asr/funasr/` | FunASR ASR models |
+| `~/.dora/models/primespeech/` | PrimeSpeech TTS base + voices |
+
+#### 3. API Keys (Optional)
+
+For LLM inference, set your API keys in the MoFA Settings app or via environment variables:
+
+```bash
+export OPENAI_API_KEY="your-key"
+export DEEPSEEK_API_KEY="your-key"
+export ALIBABA_CLOUD_API_KEY="your-key"
+```
+
 ### Build & Run
 
 ```bash
@@ -74,6 +131,39 @@ cargo build
 # Run with debug logging
 RUST_LOG=debug cargo run
 ```
+
+### Build App-Specific Dataflow
+
+MoFA Studio uses [Dora](https://github.com/dora-rs/dora) for voice chat dataflow orchestration. Each app can have its own dataflow configuration.
+
+```bash
+# Navigate to app's dataflow directory
+cd apps/mofa-fm/dataflow
+
+# Build all nodes (Rust and Python)
+dora build voice-chat.yml
+
+# Start the dataflow
+dora start voice-chat.yml
+
+# Check running dataflows
+dora list
+
+# Stop dataflow
+dora stop <dataflow-id>
+```
+
+The `node-hub/` directory contains all Dora nodes used by the dataflows:
+
+| Node | Type | Description |
+|------|------|-------------|
+| `dora-maas-client` | Rust | LLM inference via MaaS APIs |
+| `dora-conference-bridge` | Rust | Text routing between participants |
+| `dora-conference-controller` | Rust | Turn-taking and policy management |
+| `dora-primespeech` | Python | TTS synthesis with multiple voices |
+| `dora-text-segmenter` | Python | Text segmentation for TTS |
+| `dora-asr` | Python | Speech recognition (Whisper/FunASR) |
+| `dora-common` | Python | Shared logging utilities |
 
 ## 📦 Project Structure
 
