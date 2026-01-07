@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Install All Packages Script for Dora Voice Chat (Linux & macOS)
+# Install All Packages Script for MoFA Studio (Linux & macOS)
 # This script reinstalls required Python packages and builds Rust components
-# Use after the conda environment (dora_voice_chat) already exists.
+# Use after the conda environment (mofa-studio) already exists.
 
 set -e  # Exit on error
 
@@ -41,10 +41,10 @@ fi
 # Activate conda environment
 print_header "Activating Conda Environment"
 eval "$(conda shell.bash hook)"
-if conda activate dora_voice_chat 2>/dev/null; then
-    print_success "Activated conda environment: dora_voice_chat"
+if conda activate mofa-studio 2>/dev/null; then
+    print_success "Activated conda environment: mofa-studio"
 else
-    print_error "Conda environment 'dora_voice_chat' not found. Please create it first (see setup_new_chatbot README)."
+    print_error "Conda environment 'mofa-studio' not found. Please create it first (see README)."
     exit 1
 fi
 

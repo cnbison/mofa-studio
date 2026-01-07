@@ -60,7 +60,7 @@ cd models/setup-local-models
 ./setup_isolated_env.sh
 ```
 
-This creates a conda environment `dora_voice_chat` with:
+This creates a conda environment `mofa-studio` with:
 - Python 3.12
 - PyTorch 2.2.0, NumPy 1.26.4, Transformers 4.45.0
 - All voice-chat Python nodes (ASR, PrimeSpeech, Text Segmenter)
@@ -68,7 +68,7 @@ This creates a conda environment `dora_voice_chat` with:
 Activate the environment:
 
 ```bash
-conda activate dora_voice_chat
+conda activate mofa-studio
 python test_dependencies.py  # Verify installation
 ```
 

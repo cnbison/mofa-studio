@@ -170,9 +170,9 @@ cd examples/setup-new-chatbot
 
 ### **Method 2: Manual Setup**
 ```bash
-# Create voice chat environment
-conda create -n dora_voice_chat python=3.12
-conda activate dora_voice_chat
+# Create MoFA Studio environment
+conda create -n mofa-studio python=3.12
+conda activate mofa-studio
 
 # Install PyTorch ecosystem (standardized versions)
 pip install torch==2.2.0 torchaudio==2.2.0 torchvision==0.17.0
