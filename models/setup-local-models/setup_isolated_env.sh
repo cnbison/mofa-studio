@@ -259,6 +259,7 @@ install_dependencies() {
     pip install openai websockets aiohttp requests
     pip install pyyaml toml python-dotenv
     pip install pyaudio sounddevice
+    pip install nltk  # Required for TTS text processing
     
     # Install llama-cpp-python from conda-forge (avoids build issues)
     print_info "Installing llama-cpp-python from conda-forge..."
@@ -277,6 +278,11 @@ install_dependencies() {
         print_warning "Skipping MLX audio backend (macOS only)"
         print_info "Using CPU backend for TTS (cross-platform compatible)"
     fi
+
+    # Download NLTK data for TTS text processing
+    print_info "Downloading NLTK data for text processing..."
+    python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', quiet=True); nltk.download('averaged_perceptron_tagger', quiet=True); nltk.download('cmudict', quiet=True)"
+    print_success "NLTK data downloaded"
 
     print_success "Core dependencies installed"
 }
