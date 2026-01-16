@@ -259,6 +259,7 @@ install_dependencies() {
     pip install openai websockets aiohttp requests
     pip install pyyaml toml python-dotenv
     pip install pyaudio sounddevice
+    pip install nltk  # Required for TTS text processing
     
     # Install llama-cpp-python from conda-forge (avoids build issues)
     print_info "Installing llama-cpp-python from conda-forge..."
@@ -278,6 +279,11 @@ install_dependencies() {
         print_info "Using CPU backend for TTS (cross-platform compatible)"
     fi
 
+    # Download NLTK data for TTS text processing
+    print_info "Downloading NLTK data for text processing..."
+    python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', quiet=True); nltk.download('averaged_perceptron_tagger', quiet=True); nltk.download('cmudict', quiet=True)"
+    print_success "NLTK data downloaded"
+
     print_success "Core dependencies installed"
 }
 
@@ -287,8 +293,8 @@ install_dora_cli() {
     
     # Check if cargo is available
     if command -v cargo &> /dev/null; then
-        print_info "Installing dora-cli via cargo..."
-        cargo install dora-cli --locked
+        print_info "Installing dora-cli v0.3.12 via cargo..."
+        cargo install dora-cli --version 0.3.12 --locked
         
         # Check if installation was successful
         if [ -f "$HOME/.cargo/bin/dora" ]; then

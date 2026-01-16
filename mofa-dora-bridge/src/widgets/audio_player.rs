@@ -6,12 +6,16 @@
 //! - Buffer status output back to dora
 //! - Participant audio levels for LED visualization (consolidated from participant_panel)
 
-use crate::bridge::{BridgeEvent, BridgeState, DoraBridge};
+use crate::bridge::{BridgeState, DoraBridge};
 use crate::data::{AudioData, DoraData, EventMetadata};
 use crate::error::{BridgeError, BridgeResult};
+use crate::shared_state::SharedDoraState;
 use arrow::array::Array;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::{NodeId, DataId}, Parameter};
+use dora_node_api::{
+    dora_core::config::{DataId, NodeId},
+    DoraNode, Event, IntoArrow, Parameter,
+};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::thread;
@@ -22,19 +26,16 @@ use tracing::{debug, error, info, warn};
 // not what's being received (which may be buffered ahead of playback)
 
 /// Audio player bridge - receives audio from dora, provides to widget
+///
+/// Status updates (connected/disconnected/error) are communicated via SharedDoraState.
+/// Audio data is pushed directly to SharedDoraState.audio for UI consumption.
 pub struct AudioPlayerBridge {
     /// Node ID (e.g., "mofa-audio-player")
     node_id: String,
     /// Current state
     state: Arc<RwLock<BridgeState>>,
-    /// Event sender to widget
-    event_sender: Sender<BridgeEvent>,
-    /// Event receiver for widget
-    event_receiver: Receiver<BridgeEvent>,
-    /// Audio data sender to widget
-    audio_sender: Sender<AudioData>,
-    /// Audio data receiver for widget
-    audio_receiver: Receiver<AudioData>,
+    /// Shared state for direct UI communication
+    shared_state: Option<Arc<SharedDoraState>>,
     /// Buffer status sender from widget
     buffer_status_sender: Sender<f64>,
     /// Buffer status receiver for dora
@@ -46,30 +47,24 @@ pub struct AudioPlayerBridge {
 }
 
 impl AudioPlayerBridge {
-    /// Create a new audio player bridge
+    /// Create a new audio player bridge (legacy - without shared state)
     pub fn new(node_id: &str) -> Self {
-        let (event_tx, event_rx) = bounded(100);
-        // Use larger buffer to prevent blocking which would stall the pipeline
-        let (audio_tx, audio_rx) = bounded(500);
+        Self::with_shared_state(node_id, None)
+    }
+
+    /// Create a new audio player bridge with shared state
+    pub fn with_shared_state(node_id: &str, shared_state: Option<Arc<SharedDoraState>>) -> Self {
         let (buffer_tx, buffer_rx) = bounded(10);
 
         Self {
             node_id: node_id.to_string(),
             state: Arc::new(RwLock::new(BridgeState::Disconnected)),
-            event_sender: event_tx,
-            event_receiver: event_rx,
-            audio_sender: audio_tx,
-            audio_receiver: audio_rx,
+            shared_state,
             buffer_status_sender: buffer_tx,
             buffer_status_receiver: buffer_rx,
             stop_sender: None,
             worker_handle: None,
         }
-    }
-
-    /// Get receiver for audio data (widget uses this)
-    pub fn audio_receiver(&self) -> Receiver<AudioData> {
-        self.audio_receiver.clone()
     }
 
     /// Send buffer status back to dora (widget calls this)
@@ -83,34 +78,40 @@ impl AudioPlayerBridge {
     fn run_event_loop(
         node_id: String,
         state: Arc<RwLock<BridgeState>>,
-        event_sender: Sender<BridgeEvent>,
-        audio_sender: Sender<AudioData>,
+        shared_state: Option<Arc<SharedDoraState>>,
         buffer_status_receiver: Receiver<f64>,
         stop_receiver: Receiver<()>,
     ) {
         info!("Starting audio player bridge event loop for {}", node_id);
 
         // Initialize dora node
-        let (mut node, mut events) = match DoraNode::init_from_node_id(NodeId::from(node_id.clone())) {
-            Ok(n) => n,
-            Err(e) => {
-                error!("Failed to init dora node {}: {}", node_id, e);
-                *state.write() = BridgeState::Error;
-                let _ = event_sender.send(BridgeEvent::Error(format!("Init failed: {}", e)));
-                return;
-            }
-        };
+        let (mut node, mut events) =
+            match DoraNode::init_from_node_id(NodeId::from(node_id.clone())) {
+                Ok(n) => n,
+                Err(e) => {
+                    error!("Failed to init dora node {}: {}", node_id, e);
+                    *state.write() = BridgeState::Error;
+                    if let Some(ref ss) = shared_state {
+                        ss.set_error(Some(format!("Init failed: {}", e)));
+                    }
+                    return;
+                }
+            };
 
         *state.write() = BridgeState::Connected;
-        let _ = event_sender.send(BridgeEvent::Connected);
+        if let Some(ref ss) = shared_state {
+            ss.add_bridge(node_id.clone());
+        }
 
         // Session tracking - track which question_ids we've sent session_start for
         // to avoid flooding the controller with duplicate signals
-        let mut session_start_sent_for: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut session_start_sent_for: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Active participant tracking for LED visualization
         let mut active_participant: Option<String> = None;
-        let mut active_switch_for: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut active_switch_for: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Event loop
         loop {
@@ -137,8 +138,7 @@ impl AudioPlayerBridge {
                     Self::handle_dora_event(
                         event,
                         &mut node,
-                        &audio_sender,
-                        &event_sender,
+                        shared_state.as_ref(),
                         &mut session_start_sent_for,
                         &mut active_participant,
                         &mut active_switch_for,
@@ -151,7 +151,9 @@ impl AudioPlayerBridge {
         }
 
         *state.write() = BridgeState::Disconnected;
-        let _ = event_sender.send(BridgeEvent::Disconnected);
+        if let Some(ref ss) = shared_state {
+            ss.remove_bridge(&node_id);
+        }
         info!("Audio player bridge event loop ended");
     }
 
@@ -159,8 +161,7 @@ impl AudioPlayerBridge {
     fn handle_dora_event(
         event: Event,
         node: &mut DoraNode,
-        audio_sender: &Sender<AudioData>,
-        event_sender: &Sender<BridgeEvent>,
+        shared_state: Option<&Arc<SharedDoraState>>,
         session_start_sent_for: &mut std::collections::HashSet<String>,
         active_participant: &mut Option<String>,
         active_switch_for: &mut std::collections::HashSet<String>,
@@ -190,9 +191,7 @@ impl AudioPlayerBridge {
                         let sample_count = audio_data.samples.len();
                         debug!(
                             "Received audio: {} samples, {}Hz from {}",
-                            sample_count,
-                            audio_data.sample_rate,
-                            input_id
+                            sample_count, audio_data.sample_rate, input_id
                         );
 
                         // Extract participant ID from input_id (e.g., "audio_student1" -> "student1")
@@ -211,16 +210,22 @@ impl AudioPlayerBridge {
                         if let Some(qid) = question_id {
                             // Only send if we haven't sent for this question_id yet
                             if !session_start_sent_for.contains(qid) {
-                                if let Err(e) = Self::send_session_start(node, input_id, &event_meta) {
+                                if let Err(e) =
+                                    Self::send_session_start(node, input_id, &event_meta)
+                                {
                                     warn!("Failed to send session_start: {}", e);
                                 } else {
-                                    info!("Session started for question_id={} (first audio chunk)", qid);
+                                    info!(
+                                        "Session started for question_id={} (first audio chunk)",
+                                        qid
+                                    );
                                     session_start_sent_for.insert(qid.to_string());
 
                                     // Keep the set size bounded (only track last 100 question_ids)
                                     if session_start_sent_for.len() > 100 {
                                         // Remove oldest entries (approximation)
-                                        let to_remove: Vec<_> = session_start_sent_for.iter()
+                                        let to_remove: Vec<_> = session_start_sent_for
+                                            .iter()
                                             .take(50)
                                             .cloned()
                                             .collect();
@@ -241,10 +246,8 @@ impl AudioPlayerBridge {
 
                                 // Keep the set size bounded
                                 if active_switch_for.len() > 100 {
-                                    let to_remove: Vec<_> = active_switch_for.iter()
-                                        .take(50)
-                                        .cloned()
-                                        .collect();
+                                    let to_remove: Vec<_> =
+                                        active_switch_for.iter().take(50).cloned().collect();
                                     for key in to_remove {
                                         active_switch_for.remove(&key);
                                     }
@@ -265,16 +268,11 @@ impl AudioPlayerBridge {
                             audio_data_with_participant.question_id = Some(qid.to_string());
                         }
 
-                        // Use try_send() to avoid blocking if channel is full
-                        // Blocking here would prevent session_start/audio_complete from being sent
-                        if let Err(e) = audio_sender.try_send(audio_data_with_participant.clone()) {
-                            warn!("Audio channel full, dropping audio chunk: {}", e);
+                        // Push audio to SharedDoraState for UI consumption
+                        // AudioState.push() uses a ring buffer internally
+                        if let Some(ss) = shared_state {
+                            ss.audio.push(audio_data_with_participant.clone());
                         }
-                        let _ = event_sender.try_send(BridgeEvent::DataReceived {
-                            input_id: input_id.to_string(),
-                            data: DoraData::Audio(audio_data_with_participant),
-                            metadata: event_meta.clone(),
-                        });
 
                         // Send audio_complete signal back to text-segmenter
                         // This allows the next segment to be released
@@ -282,7 +280,11 @@ impl AudioPlayerBridge {
                         if let Err(e) = Self::send_audio_complete(node, input_id, &event_meta) {
                             warn!("Failed to send audio_complete: {}", e);
                         } else {
-                            debug!("Sent audio_complete for {} (qid={:?})", input_id, event_meta.get("question_id"));
+                            debug!(
+                                "Sent audio_complete for {} (qid={:?})",
+                                input_id,
+                                event_meta.get("question_id")
+                            );
                         }
                     }
                 }
@@ -300,7 +302,11 @@ impl AudioPlayerBridge {
 
     /// Send audio_complete signal to notify text-segmenter that audio was received
     /// Matches conference-dashboard's implementation for compatibility
-    fn send_audio_complete(node: &mut DoraNode, input_id: &str, metadata: &EventMetadata) -> BridgeResult<()> {
+    fn send_audio_complete(
+        node: &mut DoraNode,
+        input_id: &str,
+        metadata: &EventMetadata,
+    ) -> BridgeResult<()> {
         use std::collections::BTreeMap;
 
         // Extract participant from input_id (e.g., "audio_student1" -> "student1")
@@ -333,8 +339,12 @@ impl AudioPlayerBridge {
         let data = vec!["received".to_string()].into_arrow();
         let output_id: DataId = "audio_complete".to_string().into();
 
-        debug!("Sending audio_complete for participant: {} (question_id={:?}, session_status={:?})",
-            participant, metadata.get("question_id"), metadata.get("session_status"));
+        debug!(
+            "Sending audio_complete for participant: {} (question_id={:?}, session_status={:?})",
+            participant,
+            metadata.get("question_id"),
+            metadata.get("session_status")
+        );
 
         node.send_output(output_id, params, data)
             .map_err(|e| BridgeError::SendFailed(e.to_string()))
@@ -342,7 +352,11 @@ impl AudioPlayerBridge {
 
     /// Send session_start signal to notify conference-controller that audio playback has begun
     /// This is critical for the controller to advance to the next speaker
-    fn send_session_start(node: &mut DoraNode, input_id: &str, metadata: &EventMetadata) -> BridgeResult<()> {
+    fn send_session_start(
+        node: &mut DoraNode,
+        input_id: &str,
+        metadata: &EventMetadata,
+    ) -> BridgeResult<()> {
         use std::collections::BTreeMap;
 
         // Extract participant from input_id (e.g., "audio_student1" -> "student1")
@@ -381,8 +395,11 @@ impl AudioPlayerBridge {
         let data = vec!["audio_started".to_string()].into_arrow();
         let output_id: DataId = "session_start".to_string().into();
 
-        info!("Sending session_start for participant: {} (question_id={:?})",
-            participant, metadata.get("question_id"));
+        info!(
+            "Sending session_start for participant: {} (question_id={:?})",
+            participant,
+            metadata.get("question_id")
+        );
 
         node.send_output(output_id, params, data)
             .map_err(|e| BridgeError::SendFailed(e.to_string()))
@@ -390,8 +407,11 @@ impl AudioPlayerBridge {
 
     /// Extract audio data from dora arrow data
     /// Handles multiple formats: Float32, Float64, Int16, ListArray, LargeListArray
-    fn extract_audio(data: &dora_node_api::ArrowData, metadata: &EventMetadata) -> Option<AudioData> {
-        use arrow::array::{Float32Array, Float64Array, Int16Array, ListArray, LargeListArray};
+    fn extract_audio(
+        data: &dora_node_api::ArrowData,
+        metadata: &EventMetadata,
+    ) -> Option<AudioData> {
+        use arrow::array::{Float32Array, Float64Array, Int16Array, LargeListArray, ListArray};
         use arrow::datatypes::DataType;
 
         let array = &data.0;
@@ -401,18 +421,18 @@ impl AudioPlayerBridge {
 
         // Try to extract f32 array
         let samples: Vec<f32> = match array.data_type() {
-            DataType::Float32 => {
-                array.as_any().downcast_ref::<Float32Array>()
-                    .map(|arr| arr.values().to_vec())?
-            }
-            DataType::Float64 => {
-                array.as_any().downcast_ref::<Float64Array>()
-                    .map(|arr| arr.values().iter().map(|&x| x as f32).collect())?
-            }
-            DataType::Int16 => {
-                array.as_any().downcast_ref::<Int16Array>()
-                    .map(|arr| arr.values().iter().map(|&x| x as f32 / 32768.0).collect())?
-            }
+            DataType::Float32 => array
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .map(|arr| arr.values().to_vec())?,
+            DataType::Float64 => array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .map(|arr| arr.values().iter().map(|&x| x as f32).collect())?,
+            DataType::Int16 => array
+                .as_any()
+                .downcast_ref::<Int16Array>()
+                .map(|arr| arr.values().iter().map(|&x| x as f32 / 32768.0).collect())?,
             // Handle ListArray<Float32> - primespeech sends pa.array([audio_array])
             DataType::List(_) | DataType::LargeList(_) => {
                 debug!("Audio data is ListArray, extracting inner array");
@@ -421,14 +441,20 @@ impl AudioPlayerBridge {
                 if let Some(list_arr) = array.as_any().downcast_ref::<ListArray>() {
                     if list_arr.len() > 0 {
                         let first_value = list_arr.value(0);
-                        if let Some(float_arr) = first_value.as_any().downcast_ref::<Float32Array>() {
+                        if let Some(float_arr) = first_value.as_any().downcast_ref::<Float32Array>()
+                        {
                             debug!("Extracted {} f32 samples from ListArray", float_arr.len());
                             float_arr.values().to_vec()
-                        } else if let Some(float_arr) = first_value.as_any().downcast_ref::<Float64Array>() {
+                        } else if let Some(float_arr) =
+                            first_value.as_any().downcast_ref::<Float64Array>()
+                        {
                             debug!("Extracted {} f64 samples from ListArray", float_arr.len());
                             float_arr.values().iter().map(|&v| v as f32).collect()
                         } else {
-                            warn!("ListArray inner type not Float32/Float64: {:?}", first_value.data_type());
+                            warn!(
+                                "ListArray inner type not Float32/Float64: {:?}",
+                                first_value.data_type()
+                            );
                             return None;
                         }
                     } else {
@@ -437,14 +463,26 @@ impl AudioPlayerBridge {
                 } else if let Some(list_arr) = array.as_any().downcast_ref::<LargeListArray>() {
                     if list_arr.len() > 0 {
                         let first_value = list_arr.value(0);
-                        if let Some(float_arr) = first_value.as_any().downcast_ref::<Float32Array>() {
-                            debug!("Extracted {} f32 samples from LargeListArray", float_arr.len());
+                        if let Some(float_arr) = first_value.as_any().downcast_ref::<Float32Array>()
+                        {
+                            debug!(
+                                "Extracted {} f32 samples from LargeListArray",
+                                float_arr.len()
+                            );
                             float_arr.values().to_vec()
-                        } else if let Some(float_arr) = first_value.as_any().downcast_ref::<Float64Array>() {
-                            debug!("Extracted {} f64 samples from LargeListArray", float_arr.len());
+                        } else if let Some(float_arr) =
+                            first_value.as_any().downcast_ref::<Float64Array>()
+                        {
+                            debug!(
+                                "Extracted {} f64 samples from LargeListArray",
+                                float_arr.len()
+                            );
                             float_arr.values().iter().map(|&v| v as f32).collect()
                         } else {
-                            warn!("LargeListArray inner type not Float32/Float64: {:?}", first_value.data_type());
+                            warn!(
+                                "LargeListArray inner type not Float32/Float64: {:?}",
+                                first_value.data_type()
+                            );
                             return None;
                         }
                     } else {
@@ -513,19 +551,11 @@ impl DoraBridge for AudioPlayerBridge {
 
         let node_id = self.node_id.clone();
         let state = Arc::clone(&self.state);
-        let event_sender = self.event_sender.clone();
-        let audio_sender = self.audio_sender.clone();
+        let shared_state = self.shared_state.clone();
         let buffer_receiver = self.buffer_status_receiver.clone();
 
         let handle = thread::spawn(move || {
-            Self::run_event_loop(
-                node_id,
-                state,
-                event_sender,
-                audio_sender,
-                buffer_receiver,
-                stop_rx,
-            );
+            Self::run_event_loop(node_id, state, shared_state, buffer_receiver, stop_rx);
         });
 
         self.worker_handle = Some(handle);
@@ -590,10 +620,6 @@ impl DoraBridge for AudioPlayerBridge {
         }
 
         Ok(())
-    }
-
-    fn subscribe(&self) -> Receiver<BridgeEvent> {
-        self.event_receiver.clone()
     }
 
     fn expected_inputs(&self) -> Vec<String> {

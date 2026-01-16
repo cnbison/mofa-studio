@@ -43,6 +43,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.
 
 ## 🚀 Quick Start
 
+> **Using Nix?** See [DEPLOY_WITH_NIX.md](DEPLOY_WITH_NIX.md) for automated deployment with `./run.sh`
+
 ### Prerequisites
 
 - **Rust** 1.70+ (2021 edition)
@@ -63,16 +65,29 @@ cd models/setup-local-models
 This creates a conda environment `mofa-studio` with:
 - Python 3.12
 - PyTorch 2.2.0, NumPy 1.26.4, Transformers 4.45.0
-- All voice-chat Python nodes (ASR, PrimeSpeech, Text Segmenter)
 
-Activate the environment:
+#### 2. Install All Packages
+
+After the conda environment is created, install all Python and Rust components:
 
 ```bash
 conda activate mofa-studio
-python test_dependencies.py  # Verify installation
+./install_all_packages.sh
 ```
 
-#### 2. Model Downloads
+This installs:
+- Shared library: `dora-common`
+- Python nodes: `dora-asr`, `dora-primespeech`, `dora-speechmonitor`, `dora-text-segmenter`
+- Rust nodes: `dora-maas-client`, `dora-conference-bridge`, `dora-conference-controller`
+- Dora CLI
+
+Verify installation:
+
+```bash
+python test_dependencies.py
+```
+
+#### 3. Model Downloads
 
 ```bash
 cd models/model-manager
@@ -96,9 +111,10 @@ Models are stored in:
 | `~/.dora/models/asr/funasr/` | FunASR ASR models |
 | `~/.dora/models/primespeech/` | PrimeSpeech TTS base + voices |
 
-#### 3. API Keys (Optional)
+#### 4. API Keys (Optional)
 
 For LLM inference, set your API keys in the MoFA Settings app or via environment variables:
+(You may also enter it in the MoFA Studio's Settings UI page later)
 
 ```bash
 export OPENAI_API_KEY="your-key"
@@ -110,7 +126,7 @@ export ALIBABA_CLOUD_API_KEY="your-key"
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_ORG/mofa-studio.git
+git clone https://github.com/mofa-org/mofa-studio.git
 cd mofa-studio
 
 # Build in release mode
@@ -132,7 +148,7 @@ cargo build
 RUST_LOG=debug cargo run
 ```
 
-### Build App-Specific Dataflow
+### Run Voice Chat Dataflow
 
 MoFA Studio uses [Dora](https://github.com/dora-rs/dora) for voice chat dataflow orchestration. Each app can have its own dataflow configuration.
 
@@ -140,10 +156,10 @@ MoFA Studio uses [Dora](https://github.com/dora-rs/dora) for voice chat dataflow
 # Navigate to app's dataflow directory
 cd apps/mofa-fm/dataflow
 
-# Build all nodes (Rust and Python)
-dora build voice-chat.yml
+# Start the Dora daemon
+dora up
 
-# Start the dataflow
+# Start the dataflow (packages already installed via install_all_packages.sh)
 dora start voice-chat.yml
 
 # Check running dataflows
@@ -285,8 +301,8 @@ You may obtain a copy of the License at
 
 ## 📧 Contact
 
-- **Repository**: https://github.com/YOUR_ORG/mofa-studio
-- **Issues**: https://github.com/YOUR_ORG/mofa-studio/issues
+- **Repository**: https://github.com/mofa-org/mofa-studio
+- **Issues**: https://github.com/mofa-org/mofa-studio/issues
 
 ---
 

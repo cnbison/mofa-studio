@@ -5,28 +5,32 @@
 //! - Text responses (streaming)
 //! - Status updates
 
-use crate::bridge::{BridgeEvent, BridgeState, DoraBridge};
+use crate::bridge::{BridgeState, DoraBridge};
 use crate::data::{ChatMessage, ControlCommand, DoraData, EventMetadata, MessageRole};
 use crate::error::{BridgeError, BridgeResult};
+use crate::shared_state::SharedDoraState;
 use arrow::array::Array;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::{NodeId, DataId}, Parameter};
+use dora_node_api::{
+    dora_core::config::{DataId, NodeId},
+    DoraNode, Event, IntoArrow, Parameter,
+};
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Prompt input bridge - sends prompts to dora, receives responses
+///
+/// Status updates (connected/disconnected/error) are communicated via SharedDoraState.
+/// Chat messages are pushed directly to SharedDoraState.chat for UI consumption.
 pub struct PromptInputBridge {
     /// Node ID (e.g., "mofa-prompt-input")
     node_id: String,
     /// Current state
     state: Arc<RwLock<BridgeState>>,
-    /// Event sender to widget
-    event_sender: Sender<BridgeEvent>,
-    /// Event receiver for widget
-    event_receiver: Receiver<BridgeEvent>,
+    /// Shared state for direct UI communication
+    shared_state: Option<Arc<SharedDoraState>>,
     /// Prompt sender from widget
     prompt_sender: Sender<String>,
     /// Prompt receiver for dora
@@ -35,10 +39,6 @@ pub struct PromptInputBridge {
     control_sender: Sender<ControlCommand>,
     /// Control command receiver for dora
     control_receiver: Receiver<ControlCommand>,
-    /// Chat message sender to widget
-    chat_sender: Sender<ChatMessage>,
-    /// Chat message receiver for widget
-    chat_receiver: Receiver<ChatMessage>,
     /// Stop signal
     stop_sender: Option<Sender<()>>,
     /// Worker thread handle
@@ -46,32 +46,27 @@ pub struct PromptInputBridge {
 }
 
 impl PromptInputBridge {
-    /// Create a new prompt input bridge
+    /// Create a new prompt input bridge (legacy - without shared state)
     pub fn new(node_id: &str) -> Self {
-        let (event_tx, event_rx) = bounded(1000);  // Increased from 100 to prevent blocking
+        Self::with_shared_state(node_id, None)
+    }
+
+    /// Create a new prompt input bridge with shared state
+    pub fn with_shared_state(node_id: &str, shared_state: Option<Arc<SharedDoraState>>) -> Self {
         let (prompt_tx, prompt_rx) = bounded(10);
         let (control_tx, control_rx) = bounded(10);
-        let (chat_tx, chat_rx) = bounded(1000);  // Increased from 100 to prevent blocking
 
         Self {
             node_id: node_id.to_string(),
             state: Arc::new(RwLock::new(BridgeState::Disconnected)),
-            event_sender: event_tx,
-            event_receiver: event_rx,
+            shared_state,
             prompt_sender: prompt_tx,
             prompt_receiver: prompt_rx,
             control_sender: control_tx,
             control_receiver: control_rx,
-            chat_sender: chat_tx,
-            chat_receiver: chat_rx,
             stop_sender: None,
             worker_handle: None,
         }
-    }
-
-    /// Get receiver for chat messages (widget uses this)
-    pub fn chat_receiver(&self) -> Receiver<ChatMessage> {
-        self.chat_receiver.clone()
     }
 
     /// Send a prompt to dora (widget calls this)
@@ -92,30 +87,31 @@ impl PromptInputBridge {
     fn run_event_loop(
         node_id: String,
         state: Arc<RwLock<BridgeState>>,
-        event_sender: Sender<BridgeEvent>,
+        shared_state: Option<Arc<SharedDoraState>>,
         prompt_receiver: Receiver<String>,
         control_receiver: Receiver<ControlCommand>,
-        chat_sender: Sender<ChatMessage>,
         stop_receiver: Receiver<()>,
     ) {
         info!("Starting prompt input bridge event loop for {}", node_id);
 
         // Initialize dora node
-        let (mut node, mut events) = match DoraNode::init_from_node_id(NodeId::from(node_id.clone())) {
-            Ok(n) => n,
-            Err(e) => {
-                error!("Failed to init dora node {}: {}", node_id, e);
-                *state.write() = BridgeState::Error;
-                let _ = event_sender.send(BridgeEvent::Error(format!("Init failed: {}", e)));
-                return;
-            }
-        };
+        let (mut node, mut events) =
+            match DoraNode::init_from_node_id(NodeId::from(node_id.clone())) {
+                Ok(n) => n,
+                Err(e) => {
+                    error!("Failed to init dora node {}: {}", node_id, e);
+                    *state.write() = BridgeState::Error;
+                    if let Some(ref ss) = shared_state {
+                        ss.set_error(Some(format!("Init failed: {}", e)));
+                    }
+                    return;
+                }
+            };
 
         *state.write() = BridgeState::Connected;
-        let _ = event_sender.send(BridgeEvent::Connected);
-
-        // Streaming text accumulation by (sender, session_id)
-        let mut streaming_text: HashMap<(String, String), String> = HashMap::new();
+        if let Some(ref ss) = shared_state {
+            ss.add_bridge(node_id.clone());
+        }
 
         // Event loop
         loop {
@@ -142,12 +138,7 @@ impl PromptInputBridge {
             // Receive dora events with timeout
             match events.recv_timeout(std::time::Duration::from_millis(100)) {
                 Some(event) => {
-                    Self::handle_dora_event(
-                        event,
-                        &chat_sender,
-                        &event_sender,
-                        &mut streaming_text,
-                    );
+                    Self::handle_dora_event(event, shared_state.as_ref());
                 }
                 None => {
                     // Timeout or no event, continue
@@ -156,17 +147,14 @@ impl PromptInputBridge {
         }
 
         *state.write() = BridgeState::Disconnected;
-        let _ = event_sender.send(BridgeEvent::Disconnected);
+        if let Some(ref ss) = shared_state {
+            ss.remove_bridge(&node_id);
+        }
         info!("Prompt input bridge event loop ended");
     }
 
     /// Handle a dora event
-    fn handle_dora_event(
-        event: Event,
-        chat_sender: &Sender<ChatMessage>,
-        event_sender: &Sender<BridgeEvent>,
-        streaming_text: &mut HashMap<(String, String), String>,
-    ) {
+    fn handle_dora_event(event: Event, shared_state: Option<&Arc<SharedDoraState>>) {
         match event {
             Event::Input { id, data, metadata } => {
                 let input_id = id.as_str();
@@ -190,47 +178,31 @@ impl PromptInputBridge {
                 if input_id.contains("text") || input_id.contains("response") {
                     if let Some(text) = Self::extract_string(&data) {
                         let sender = Self::extract_sender(input_id);
-                        let session_id = event_meta.get("question_id")
+                        let session_id = event_meta
+                            .get("question_id")
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "unknown".to_string());
-                        let session_status = event_meta.get("session_status")
+                        let session_status = event_meta
+                            .get("session_status")
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "unknown".to_string());
-
-                        let key = (sender.clone(), session_id.clone());
-
-                        // Accumulate streaming text
-                        let accumulated = streaming_text.entry(key.clone()).or_insert_with(String::new);
-                        accumulated.push_str(&text);
 
                         // LLM sends "ended" (not "complete") when streaming finishes
                         let is_complete = session_status == "ended" || session_status == "complete";
-                        let content = accumulated.clone();
 
                         let msg = ChatMessage {
-                            content,
+                            content: text,
                             sender,
                             role: MessageRole::Assistant,
                             timestamp: crate::data::current_timestamp(),
                             is_streaming: !is_complete,
-                            session_id: Some(session_id.clone()),
+                            session_id: Some(session_id),
                         };
 
-                        // Use try_send to avoid blocking if channel is full
-                        if let Err(e) = chat_sender.try_send(msg.clone()) {
-                            warn!("Chat channel full, dropping message: {}", e);
-                        }
-                        if let Err(e) = event_sender.try_send(BridgeEvent::DataReceived {
-                            input_id: input_id.to_string(),
-                            data: DoraData::Chat(msg),
-                            metadata: event_meta,
-                        }) {
-                            warn!("Event channel full, dropping event: {}", e);
-                        }
-
-                        // Clear accumulated text when session is complete
-                        if is_complete {
-                            streaming_text.remove(&key);
+                        // Push chat message to SharedDoraState for UI consumption
+                        // ChatState.push() handles streaming consolidation internally
+                        if let Some(ss) = shared_state {
+                            ss.chat.push(msg);
                         }
                     }
                 }
@@ -259,7 +231,10 @@ impl PromptInputBridge {
     fn extract_string(data: &dora_node_api::ArrowData) -> Option<String> {
         match data.0.data_type() {
             arrow::datatypes::DataType::Utf8 => {
-                let array = data.0.as_any().downcast_ref::<arrow::array::StringArray>()?;
+                let array = data
+                    .0
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()?;
                 if array.len() > 0 {
                     return Some(array.value(0).to_string());
                 }
@@ -295,15 +270,15 @@ impl PromptInputBridge {
 
         info!("Sending prompt to dora: {}", prompt);
         let data = payload.to_string().into_arrow();
-        let output_id: DataId = "control".to_string().into();  // Use control output
+        let output_id: DataId = "control".to_string().into(); // Use control output
         node.send_output(output_id, Default::default(), data)
             .map_err(|e| BridgeError::SendFailed(e.to_string()))
     }
 
     /// Send control command to dora
     fn send_control_to_dora(node: &mut DoraNode, cmd: &ControlCommand) -> BridgeResult<()> {
-        let payload = serde_json::to_string(cmd)
-            .map_err(|e| BridgeError::SendFailed(e.to_string()))?;
+        let payload =
+            serde_json::to_string(cmd).map_err(|e| BridgeError::SendFailed(e.to_string()))?;
 
         let data = payload.into_arrow();
         let output_id: DataId = "control".to_string().into();
@@ -333,19 +308,17 @@ impl DoraBridge for PromptInputBridge {
 
         let node_id = self.node_id.clone();
         let state = Arc::clone(&self.state);
-        let event_sender = self.event_sender.clone();
+        let shared_state = self.shared_state.clone();
         let prompt_receiver = self.prompt_receiver.clone();
         let control_receiver = self.control_receiver.clone();
-        let chat_sender = self.chat_sender.clone();
 
         let handle = thread::spawn(move || {
             Self::run_event_loop(
                 node_id,
                 state,
-                event_sender,
+                shared_state,
                 prompt_receiver,
                 control_receiver,
-                chat_sender,
                 stop_rx,
             );
         });
@@ -414,10 +387,6 @@ impl DoraBridge for PromptInputBridge {
         Ok(())
     }
 
-    fn subscribe(&self) -> Receiver<BridgeEvent> {
-        self.event_receiver.clone()
-    }
-
     fn expected_inputs(&self) -> Vec<String> {
         vec![
             "text".to_string(),
@@ -428,7 +397,7 @@ impl DoraBridge for PromptInputBridge {
     }
 
     fn expected_outputs(&self) -> Vec<String> {
-        vec!["control".to_string()]  // Prompts are sent via control output as JSON
+        vec!["control".to_string()] // Prompts are sent via control output as JSON
     }
 }
 

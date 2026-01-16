@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-use super::providers::{Provider, ProviderId, get_supported_providers};
+use super::providers::{get_supported_providers, Provider, ProviderId};
 
 /// User preferences for the dashboard
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -13,6 +13,10 @@ pub struct Preferences {
     pub default_chat_provider: Option<ProviderId>,
     pub default_tts_provider: Option<ProviderId>,
     pub default_asr_provider: Option<ProviderId>,
+    #[serde(default)]
+    pub audio_input_device: Option<String>,
+    #[serde(default)]
+    pub audio_output_device: Option<String>,
     /// Dark mode preference (true = dark, false = light)
     #[serde(default)]
     pub dark_mode: bool,
@@ -22,7 +26,9 @@ impl Preferences {
     /// Get the preferences file path
     pub fn get_preferences_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".dora").join("dashboard").join("preferences.json")
+        home.join(".dora")
+            .join("dashboard")
+            .join("preferences.json")
     }
 
     /// Load preferences from disk, or create defaults if not found
@@ -102,7 +108,11 @@ impl Preferences {
 
     /// Remove a custom provider
     pub fn remove_provider(&mut self, id: &str) -> bool {
-        if let Some(pos) = self.providers.iter().position(|p| p.id == id && p.is_custom) {
+        if let Some(pos) = self
+            .providers
+            .iter()
+            .position(|p| p.id == id && p.is_custom)
+        {
             self.providers.remove(pos);
             true
         } else {

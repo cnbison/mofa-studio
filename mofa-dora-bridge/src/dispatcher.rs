@@ -4,17 +4,17 @@
 //! dora dynamic nodes. Each widget type has its own bridge that
 //! connects as a separate dynamic node.
 
-use crate::bridge::{BridgeEvent, BridgeState, DoraBridge};
+use crate::bridge::{BridgeState, DoraBridge};
 use crate::controller::DataflowController;
 use crate::error::{BridgeError, BridgeResult};
 use crate::parser::MofaNodeSpec;
+use crate::shared_state::SharedDoraState;
 use crate::widgets::{AudioPlayerBridge, PromptInputBridge, SystemLogBridge, CastControllerBridge};
 use crate::MofaNodeType;
-use crossbeam_channel::Receiver;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Binding between a widget and its dora node
 #[derive(Debug, Clone)]
@@ -30,31 +30,50 @@ pub struct WidgetBinding {
 }
 
 /// Dispatcher for managing dynamic node connections
+///
+/// Status updates and data are now communicated via SharedDoraState
+/// instead of event channels.
 pub struct DynamicNodeDispatcher {
     /// Dataflow controller
     controller: Arc<RwLock<DataflowController>>,
+    /// Shared state for Dora↔UI communication
+    shared_state: Arc<SharedDoraState>,
     /// Active bridges indexed by node ID
     bridges: HashMap<String, Box<dyn DoraBridge>>,
     /// Widget bindings
     bindings: Vec<WidgetBinding>,
-    /// Event receivers for each bridge
-    event_receivers: HashMap<String, Receiver<BridgeEvent>>,
 }
 
 impl DynamicNodeDispatcher {
     /// Create a new dispatcher with a dataflow controller
     pub fn new(controller: DataflowController) -> Self {
+        Self::with_shared_state(controller, SharedDoraState::new())
+    }
+
+    /// Create a new dispatcher with an external shared state
+    ///
+    /// This allows the caller to hold a reference to the shared state
+    /// for direct UI polling without going through channels.
+    pub fn with_shared_state(
+        controller: DataflowController,
+        shared_state: Arc<SharedDoraState>,
+    ) -> Self {
         Self {
             controller: Arc::new(RwLock::new(controller)),
+            shared_state,
             bridges: HashMap::new(),
             bindings: Vec::new(),
-            event_receivers: HashMap::new(),
         }
     }
 
     /// Get the dataflow controller
     pub fn controller(&self) -> &Arc<RwLock<DataflowController>> {
         &self.controller
+    }
+
+    /// Get the shared state for Dora↔UI communication
+    pub fn shared_state(&self) -> &Arc<SharedDoraState> {
+        &self.shared_state
     }
 
     /// Discover MoFA nodes from the parsed dataflow
@@ -70,22 +89,27 @@ impl DynamicNodeDispatcher {
     pub fn create_bridges(&mut self) -> BridgeResult<()> {
         let mofa_nodes = self.discover_mofa_nodes();
         info!("Creating bridges for {} discovered mofa nodes", mofa_nodes.len());
+        let shared_state = Some(self.shared_state.clone());
 
         for node_spec in mofa_nodes {
             info!("Creating bridge for node '{}' (type: {:?})", node_spec.id, node_spec.node_type);
             let bridge: Box<dyn DoraBridge> = match node_spec.node_type {
-                MofaNodeType::AudioPlayer => {
-                    Box::new(AudioPlayerBridge::new(&node_spec.id))
-                }
-                MofaNodeType::SystemLog => {
-                    Box::new(SystemLogBridge::new(&node_spec.id))
-                }
-                MofaNodeType::PromptInput => {
-                    Box::new(PromptInputBridge::new(&node_spec.id))
-                }
-                MofaNodeType::MoFACast => {
-                    Box::new(CastControllerBridge::new(&node_spec.id))
-                }
+                MofaNodeType::AudioPlayer => Box::new(AudioPlayerBridge::with_shared_state(
+                    &node_spec.id,
+                    shared_state.clone(),
+                )),
+                MofaNodeType::SystemLog => Box::new(SystemLogBridge::with_shared_state(
+                    &node_spec.id,
+                    shared_state.clone(),
+                )),
+                MofaNodeType::PromptInput => Box::new(PromptInputBridge::with_shared_state(
+                    &node_spec.id,
+                    shared_state.clone(),
+                )),
+                MofaNodeType::MoFACast => Box::new(CastControllerBridge::with_shared_state(
+                    &node_spec.id,
+                    shared_state.clone(),
+                )),
                 MofaNodeType::MicInput => {
                     // TODO: Implement MicInputBridge
                     continue;
@@ -102,9 +126,6 @@ impl DynamicNodeDispatcher {
                 }
             };
 
-            let receiver = bridge.subscribe();
-            self.event_receivers.insert(node_spec.id.clone(), receiver);
-
             self.bindings.push(WidgetBinding {
                 widget_id: node_spec.id.clone(),
                 node_type: node_spec.node_type,
@@ -115,7 +136,7 @@ impl DynamicNodeDispatcher {
             self.bridges.insert(node_spec.id, bridge);
         }
 
-        info!("Created {} bridges", self.bridges.len());
+        info!("Created {} bridges with shared state", self.bridges.len());
         Ok(())
     }
 
@@ -136,7 +157,8 @@ impl DynamicNodeDispatcher {
                 Ok(()) => {
                     info!("Connected bridge: {}", node_id);
                     // Update binding state
-                    if let Some(binding) = self.bindings.iter_mut().find(|b| &b.node_id == node_id) {
+                    if let Some(binding) = self.bindings.iter_mut().find(|b| &b.node_id == node_id)
+                    {
                         binding.state = BridgeState::Connected;
                     }
                 }
@@ -162,7 +184,8 @@ impl DynamicNodeDispatcher {
             match bridge.disconnect() {
                 Ok(()) => {
                     debug!("Disconnected bridge: {}", node_id);
-                    if let Some(binding) = self.bindings.iter_mut().find(|b| &b.node_id == node_id) {
+                    if let Some(binding) = self.bindings.iter_mut().find(|b| &b.node_id == node_id)
+                    {
                         binding.state = BridgeState::Disconnected;
                     }
                 }
@@ -188,11 +211,6 @@ impl DynamicNodeDispatcher {
     /// Get a mutable bridge by node ID
     pub fn get_bridge_mut(&mut self, node_id: &str) -> Option<&mut Box<dyn DoraBridge>> {
         self.bridges.get_mut(node_id)
-    }
-
-    /// Get event receiver for a bridge
-    pub fn get_event_receiver(&self, node_id: &str) -> Option<&Receiver<BridgeEvent>> {
-        self.event_receivers.get(node_id)
     }
 
     /// Get all bindings
@@ -230,8 +248,35 @@ impl DynamicNodeDispatcher {
 
         info!("Connecting {} bridges to dora...", self.bridges.len());
 
-        // Connect all bridges
-        self.connect_all()?;
+        const MAX_CONNECT_ATTEMPTS: usize = 15;
+        let connect_retry_delay = std::time::Duration::from_secs(2);
+
+        let mut last_err: Option<BridgeError> = None;
+        for attempt in 1..=MAX_CONNECT_ATTEMPTS {
+            match self.connect_all() {
+                Ok(()) => {
+                    info!("All bridges connected after {} attempt(s)", attempt);
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "Bridge connection attempt {} failed: {}. Retrying...",
+                        attempt, e
+                    );
+                    last_err = Some(e);
+                    std::thread::sleep(connect_retry_delay);
+                }
+            }
+        }
+
+        if let Some(err) = last_err {
+            error!(
+                "Failed to connect bridges after {} attempts: {}",
+                MAX_CONNECT_ATTEMPTS, err
+            );
+            return Err(err);
+        }
 
         Ok(dataflow_id)
     }
@@ -251,7 +296,10 @@ impl DynamicNodeDispatcher {
     /// Stop the dataflow with a custom grace duration
     ///
     /// After the grace duration, nodes that haven't stopped will be killed (SIGKILL).
-    pub fn stop_with_grace_duration(&mut self, grace_duration: std::time::Duration) -> BridgeResult<()> {
+    pub fn stop_with_grace_duration(
+        &mut self,
+        grace_duration: std::time::Duration,
+    ) -> BridgeResult<()> {
         // Disconnect bridges first
         self.disconnect_all()?;
 
@@ -279,19 +327,6 @@ impl DynamicNodeDispatcher {
     /// Check if the dispatcher is running
     pub fn is_running(&self) -> bool {
         self.controller.read().state().is_running()
-    }
-
-    /// Poll for events from all bridges (non-blocking)
-    pub fn poll_events(&self) -> Vec<(String, BridgeEvent)> {
-        let mut events = Vec::new();
-
-        for (node_id, receiver) in &self.event_receivers {
-            while let Ok(event) = receiver.try_recv() {
-                events.push((node_id.clone(), event));
-            }
-        }
-
-        events
     }
 }
 
@@ -327,7 +362,8 @@ impl DispatcherBuilder {
     }
 
     pub fn build(self) -> BridgeResult<DynamicNodeDispatcher> {
-        let controller = self.controller
+        let controller = self
+            .controller
             .ok_or_else(|| BridgeError::Unknown("No controller provided".to_string()))?;
 
         let mut dispatcher = DynamicNodeDispatcher::new(controller);

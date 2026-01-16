@@ -7,9 +7,8 @@
 //! - Log sources for system log widget
 
 use crate::data::LogLevel;
-use crate::error::{BridgeError, BridgeResult};
+use crate::error::BridgeResult;
 use crate::MofaNodeType;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +67,10 @@ pub enum NodeKind {
     /// Rust operator
     Rust { path: String },
     /// Custom node
-    Custom { source: String, args: Option<String> },
+    Custom {
+        source: String,
+        args: Option<String>,
+    },
     /// Dynamic node (connected at runtime)
     Dynamic,
 }
@@ -148,7 +150,10 @@ impl DataflowParser {
 
                     // Extract log sources
                     for output in &parsed.outputs {
-                        if output.ends_with("_log") || output == "log" || output.ends_with("_status") {
+                        if output.ends_with("_log")
+                            || output == "log"
+                            || output.ends_with("_status")
+                        {
                             log_sources.push(LogSource {
                                 node_id: parsed.id.clone(),
                                 output_id: output.clone(),
@@ -190,15 +195,26 @@ impl DataflowParser {
         // Determine node kind
         let kind = if let Some(op) = value.get("operator") {
             if let Some(python) = op.get("python").and_then(|p| p.as_str()) {
-                NodeKind::Python { path: python.to_string() }
+                NodeKind::Python {
+                    path: python.to_string(),
+                }
             } else if let Some(rust) = op.get("rust").and_then(|r| r.as_str()) {
-                NodeKind::Rust { path: rust.to_string() }
+                NodeKind::Rust {
+                    path: rust.to_string(),
+                }
             } else {
                 NodeKind::Dynamic
             }
         } else if let Some(custom) = value.get("custom") {
-            let source = custom.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
-            let args = custom.get("args").and_then(|a| a.as_str()).map(|s| s.to_string());
+            let source = custom
+                .get("source")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = custom
+                .get("args")
+                .and_then(|a| a.as_str())
+                .map(|s| s.to_string());
             NodeKind::Custom { source, args }
         } else if value.get("path").and_then(|p| p.as_str()) == Some("dynamic") {
             NodeKind::Dynamic
@@ -213,11 +229,27 @@ impl DataflowParser {
         let mut inputs = Vec::new();
         if let Some(inputs_map) = value.get("inputs").and_then(|i| i.as_mapping()) {
             for (key, val) in inputs_map {
-                if let (Some(id), Some(source)) = (key.as_str(), val.as_str()) {
-                    inputs.push(InputDef {
-                        id: id.to_string(),
-                        source: source.to_string(),
-                    });
+                if let Some(id) = key.as_str() {
+                    // Handle both string format and nested mapping format
+                    let source = if let Some(source_str) = val.as_str() {
+                        // Simple string format: "node/output"
+                        Some(source_str.to_string())
+                    } else if let Some(mapping) = val.as_mapping() {
+                        // Nested format: { source: "node/output", queue_size: ... }
+                        mapping
+                            .get("source")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+
+                    if let Some(source) = source {
+                        inputs.push(InputDef {
+                            id: id.to_string(),
+                            source,
+                        });
+                    }
                 }
             }
         }
@@ -289,24 +321,25 @@ impl DataflowParser {
             || key.to_uppercase().contains("TOKEN");
 
         // Parse placeholder syntax: ${VAR}, ${VAR:-default}, or $VAR
-        let (is_placeholder, has_default, default_value) = if value.starts_with("${") && value.ends_with("}") {
-            // ${VAR} or ${VAR:-default}
-            let inner = &value[2..value.len()-1];
-            if let Some(pos) = inner.find(":-") {
-                // ${VAR:-default} - has a default value
-                let default = inner[pos+2..].to_string();
-                (true, true, Some(default))
-            } else {
-                // ${VAR} - no default, required
+        let (is_placeholder, has_default, default_value) =
+            if value.starts_with("${") && value.ends_with("}") {
+                // ${VAR} or ${VAR:-default}
+                let inner = &value[2..value.len() - 1];
+                if let Some(pos) = inner.find(":-") {
+                    // ${VAR:-default} - has a default value
+                    let default = inner[pos + 2..].to_string();
+                    (true, true, Some(default))
+                } else {
+                    // ${VAR} - no default, required
+                    (true, false, None)
+                }
+            } else if value.starts_with("$") {
+                // $VAR - no default, required
                 (true, false, None)
-            }
-        } else if value.starts_with("$") {
-            // $VAR - no default, required
-            (true, false, None)
-        } else {
-            // Literal value
-            (false, false, Some(value.clone()))
-        };
+            } else {
+                // Literal value
+                (false, false, Some(value.clone()))
+            };
 
         // Only required if it's a placeholder WITHOUT a default
         let required = is_placeholder && !has_default;

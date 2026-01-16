@@ -69,6 +69,10 @@ print_info "Project root: $PROJECT_ROOT"
 print_header "Installing Dora Python Packages"
 cd "$PROJECT_ROOT"
 
+print_info "Installing dora-common (shared library)..."
+pip install -e libs/dora-common
+print_success "dora-common installed"
+
 print_info "Installing dora-primespeech..."
 pip install -e node-hub/dora-primespeech
 print_success "dora-primespeech installed"
@@ -106,26 +110,29 @@ if command -v dora &> /dev/null; then
     read -p "Do you want to reinstall/update Dora CLI? (y/n): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        cargo install dora-cli --locked
+        cargo install dora-cli --version 0.3.12 --locked --force
         print_success "Dora CLI updated"
     fi
 else
     print_info "Installing Dora CLI..."
-    cargo install dora-cli --locked
+    cargo install dora-cli --version 0.3.12 --locked
     print_success "Dora CLI installed"
 fi
 
 # Build Rust-based nodes
 print_header "Building Rust Components"
-cd "$PROJECT_ROOT"
 
 print_info "Building dora-maas-client..."
-cargo build --release -p dora-maas-client
+cargo build --release --manifest-path "$PROJECT_ROOT/node-hub/dora-maas-client/Cargo.toml"
 print_success "dora-maas-client built"
 
-print_info "Building dora-openai-websocket..."
-cargo build --release -p dora-openai-websocket
-print_success "dora-openai-websocket built"
+print_info "Building dora-conference-bridge..."
+cargo build --release --manifest-path "$PROJECT_ROOT/node-hub/dora-conference-bridge/Cargo.toml"
+print_success "dora-conference-bridge built"
+
+print_info "Building dora-conference-controller..."
+cargo build --release --manifest-path "$PROJECT_ROOT/node-hub/dora-conference-controller/Cargo.toml"
+print_success "dora-conference-controller built"
 
 # Summary
 print_header "Installation Complete!"

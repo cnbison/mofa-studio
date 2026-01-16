@@ -37,6 +37,11 @@ pub struct CastControllerBridge {
 impl CastControllerBridge {
     /// Create a new cast controller bridge
     pub fn new(node_id: &str) -> Self {
+        Self::with_shared_state(node_id, None)
+    }
+
+    /// Create a new cast controller bridge with shared state
+    pub fn with_shared_state(node_id: &str, _shared_state: Option<Arc<crate::shared_state::SharedDoraState>>) -> Self {
         let (event_tx, event_rx) = bounded(1000);
         let (text_tx, text_rx) = bounded(100);
 

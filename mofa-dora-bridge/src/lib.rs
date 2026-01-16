@@ -23,22 +23,24 @@
 //! 4. Route data between widgets and dora
 
 pub mod bridge;
-pub mod data;
-pub mod parser;
 pub mod controller;
+pub mod data;
 pub mod dispatcher;
 pub mod error;
+pub mod parser;
+pub mod shared_state;
 
 // Widget-specific bridges
 pub mod widgets;
 
 // Re-exports
-pub use bridge::{DoraBridge, BridgeState, BridgeEvent};
-pub use data::{DoraData, AudioData, LogEntry, ChatMessage, ControlCommand};
-pub use parser::{DataflowParser, ParsedDataflow, ParsedNode, EnvRequirement, LogSource};
+pub use bridge::{BridgeState, DoraBridge};
 pub use controller::{DataflowController, DataflowState};
+pub use data::{AudioData, ChatMessage, ControlCommand, DoraData, LogEntry};
 pub use dispatcher::{DynamicNodeDispatcher, WidgetBinding};
 pub use error::{BridgeError, BridgeResult};
+pub use parser::{DataflowParser, EnvRequirement, LogSource, ParsedDataflow, ParsedNode};
+pub use shared_state::{AudioState, ChatState, DirtyValue, DirtyVec, DoraStatus, SharedDoraState};
 
 /// Prefix for MoFA built-in dynamic nodes in dataflow YAML
 pub const MOFA_NODE_PREFIX: &str = "mofa-";
@@ -79,13 +81,13 @@ impl MofaNodeType {
     /// Parse node type from node ID
     pub fn from_node_id(node_id: &str) -> Option<Self> {
         match node_id {
-            "mofa-audio-player" => Some(MofaNodeType::AudioPlayer),
-            "mofa-system-log" => Some(MofaNodeType::SystemLog),
-            "mofa-prompt-input" => Some(MofaNodeType::PromptInput),
-            "mofa-mic-input" => Some(MofaNodeType::MicInput),
-            "mofa-chat-viewer" => Some(MofaNodeType::ChatViewer),
-            "mofa-participant-panel" => Some(MofaNodeType::ParticipantPanel),
-            "mofa-cast-controller" => Some(MofaNodeType::MoFACast),
+            id if id.starts_with("mofa-audio-player") => Some(MofaNodeType::AudioPlayer),
+            id if id.starts_with("mofa-system-log") => Some(MofaNodeType::SystemLog),
+            id if id.starts_with("mofa-prompt-input") => Some(MofaNodeType::PromptInput),
+            id if id.starts_with("mofa-mic-input") => Some(MofaNodeType::MicInput),
+            id if id.starts_with("mofa-chat-viewer") => Some(MofaNodeType::ChatViewer),
+            id if id.starts_with("mofa-participant-panel") => Some(MofaNodeType::ParticipantPanel),
+            id if id.starts_with("mofa-cast-controller") => Some(MofaNodeType::MoFACast),
             _ => None,
         }
     }

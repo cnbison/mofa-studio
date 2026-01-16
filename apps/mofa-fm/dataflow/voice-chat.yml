@@ -27,6 +27,7 @@ nodes:
       ALIBABA_CLOUD_API_KEY: ${ALIBABA_CLOUD_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       LOG_LEVEL: INFO
 
   - id: student2
@@ -44,6 +45,7 @@ nodes:
       ALIBABA_CLOUD_API_KEY: ${ALIBABA_CLOUD_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       LOG_LEVEL: INFO
 
   - id: tutor
@@ -61,6 +63,7 @@ nodes:
       ALIBABA_CLOUD_API_KEY: ${ALIBABA_CLOUD_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       LOG_LEVEL: INFO
 
   # ============ Multi-Participant Audio Pipeline ============
@@ -135,8 +138,8 @@ nodes:
       TOP_K: 5
       TOP_P: 1.0
       TEMPERATURE: 1.0
-      SPEED_FACTOR: 1.0
-      FRAGMENT_INTERVAL: "0.1"
+      SPEED_FACTOR: 1.1
+      FRAGMENT_INTERVAL: "0.2"
       USE_GPU: false
       NUM_THREADS: 4
       RETURN_FRAGMENT: "false"

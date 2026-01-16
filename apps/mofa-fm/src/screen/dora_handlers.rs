@@ -1,16 +1,23 @@
 //! Dora integration handlers for MoFaFMScreen
 //!
 //! Handles dataflow control, event processing, and participant panel updates.
+//!
+//! Simplified data flow architecture (all SharedDoraState):
+//! - Chat: UI polls SharedDoraState.chat directly
+//! - Audio: UI drains SharedDoraState.audio directly
+//! - Logs: UI polls SharedDoraState.logs directly
+//! - Status: UI polls SharedDoraState.status directly
+//! - Control flow only: DoraEvent channel (DataflowStarted, DataflowStopped, Error)
 
 use makepad_widgets::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::mofa_hero::{MofaHeroWidgetExt, ConnectionStatus};
-use crate::dora_integration::{DoraIntegration, DoraEvent};
+use crate::dora_integration::{DoraEvent, DoraIntegration};
+use crate::mofa_hero::{ConnectionStatus, MofaHeroWidgetExt};
 use mofa_settings::data::Preferences;
 
-use super::{MoFaFMScreen, ChatMessageEntry};
+use super::{ChatMessageEntry, MoFaFMScreen};
 
 impl MoFaFMScreen {
     // =====================================================
@@ -32,24 +39,29 @@ impl MoFaFMScreen {
 
         // Look for default dataflow relative to current working directory
         // Check multiple possible locations
-        let dataflow_path = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| {
-                // First try: apps/mofa-fm/dataflow/voice-chat.yml (when running from workspace root)
-                let app_path = cwd.join("apps").join("mofa-fm").join("dataflow").join("voice-chat.yml");
-                if app_path.exists() {
-                    return Some(app_path);
-                }
-                // Second try: dataflow/voice-chat.yml (when running from app directory)
-                let local_path = cwd.join("dataflow").join("voice-chat.yml");
-                if local_path.exists() {
-                    return Some(local_path);
-                }
-                None
-            });
+        let dataflow_path = std::env::current_dir().ok().and_then(|cwd| {
+            // First try: apps/mofa-fm/dataflow/voice-chat.yml (when running from workspace root)
+            let app_path = cwd
+                .join("apps")
+                .join("mofa-fm")
+                .join("dataflow")
+                .join("voice-chat.yml");
+            if app_path.exists() {
+                return Some(app_path);
+            }
+            // Second try: dataflow/voice-chat.yml (when running from app directory)
+            let local_path = cwd.join("dataflow").join("voice-chat.yml");
+            if local_path.exists() {
+                return Some(local_path);
+            }
+            None
+        });
         self.dataflow_path = dataflow_path;
 
-        ::log::info!("Dora integration initialized, dataflow: {:?}", self.dataflow_path);
+        ::log::info!(
+            "Dora integration initialized, dataflow: {:?}",
+            self.dataflow_path
+        );
     }
 
     /// Start a dataflow
@@ -80,152 +92,186 @@ impl MoFaFMScreen {
     }
 
     /// Poll for dora events and update UI
+    ///
+    /// All data is polled from SharedDoraState:
+    /// - chat: streaming messages from LLM
+    /// - audio: TTS audio chunks
+    /// - logs: system log entries
+    /// - status: bridge connection status
+    ///
+    /// DoraEvents are only used for control flow (DataflowStarted/Stopped, Error)
     pub(super) fn poll_dora_events(&mut self, cx: &mut Cx) {
-        // Get dora events if integration is running
+        // =====================================================
+        // Poll SharedDoraState for all data
+        // =====================================================
+        // Collect data first, then update UI (avoids borrow checker issues)
+        let (chat_messages, audio_chunks, log_entries, status) =
+            if let Some(ref dora) = self.dora_integration {
+                let shared_state = dora.shared_dora_state();
+                (
+                    shared_state.chat.read_if_dirty(),
+                    shared_state.audio.drain(),
+                    shared_state.logs.read_if_dirty(),
+                    shared_state.status.read_if_dirty(),
+                )
+            } else {
+                (None, Vec::new(), None, None)
+            };
+
+        // Update chat display if new messages
+        if let Some(messages) = chat_messages {
+            // Keep user messages (sender == "You") from local state
+            let user_messages: Vec<ChatMessageEntry> = self
+                .chat_messages
+                .iter()
+                .filter(|m| m.sender == "You")
+                .cloned()
+                .collect();
+
+            // Convert SharedDoraState messages to ChatMessageEntry
+            let mut assistant_messages: Vec<ChatMessageEntry> = messages
+                .into_iter()
+                .map(|m| ChatMessageEntry {
+                    sender: m.sender,
+                    content: m.content,
+                    timestamp: m.timestamp,
+                    is_streaming: m.is_streaming,
+                    session_id: m.session_id,
+                })
+                .collect();
+
+            // Merge user and assistant messages, sorted by timestamp
+            assistant_messages.extend(user_messages);
+            assistant_messages.sort_by_key(|m| m.timestamp);
+
+            self.chat_messages = assistant_messages;
+            self.update_chat_display(cx);
+        }
+
+        // Forward audio chunks to player
+        for chunk in audio_chunks {
+            if let Some(ref player) = self.audio_player {
+                player.write_audio_with_question(
+                    &chunk.samples,
+                    chunk.participant_id.clone(),
+                    chunk.question_id.clone(),
+                );
+            }
+        }
+
+        // Process new log entries from SharedDoraState
+        if let Some(entries) = log_entries {
+            // Only process entries we haven't seen yet
+            for entry in entries.into_iter().skip(self.processed_dora_log_count) {
+                let level_str = format!("{:?}", entry.level).to_uppercase();
+                let log_line = format!("[{}] [{}] {}", level_str, entry.node_id, entry.message);
+                self.add_log(cx, &log_line);
+                self.processed_dora_log_count += 1;
+            }
+        }
+
+        // Process bridge status changes from SharedDoraState
+        if let Some(dora_status) = status {
+            // Log bridge connections/disconnections by comparing with tracked state
+            for bridge in &dora_status.active_bridges {
+                if !self.connected_bridges.contains(bridge) {
+                    ::log::info!("Bridge connected: {}", bridge);
+                    let display_name = Self::format_bridge_name(bridge);
+                    self.add_log(
+                        cx,
+                        &format!(
+                            "[INFO] [Bridge] {} connected to dora dataflow",
+                            display_name
+                        ),
+                    );
+                    self.connected_bridges.push(bridge.clone());
+                }
+            }
+            // Check for disconnected bridges
+            let disconnected: Vec<_> = self
+                .connected_bridges
+                .iter()
+                .filter(|b| !dora_status.active_bridges.contains(b))
+                .cloned()
+                .collect();
+            for bridge in disconnected {
+                ::log::info!("Bridge disconnected: {}", bridge);
+                let display_name = Self::format_bridge_name(&bridge);
+                self.add_log(
+                    cx,
+                    &format!(
+                        "[WARN] [Bridge] {} disconnected from dora dataflow",
+                        display_name
+                    ),
+                );
+                self.connected_bridges.retain(|b| b != &bridge);
+            }
+        }
+
+        // =====================================================
+        // Poll event channel for control flow events only
+        // =====================================================
         let events = if let Some(ref dora) = self.dora_integration {
             dora.poll_events()
         } else {
-            Vec::new()  // Continue to update audio visualization even without dora
+            Vec::new()
         };
 
         for event in events {
             match event {
                 DoraEvent::DataflowStarted { dataflow_id } => {
                     ::log::info!("Dataflow started: {}", dataflow_id);
-                    self.add_log(cx, &format!("[INFO] [App] Dataflow started: {}", dataflow_id));
-                    self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Connected);
+                    self.add_log(
+                        cx,
+                        &format!("[INFO] [App] Dataflow started: {}", dataflow_id),
+                    );
+                    self.view
+                        .mofa_hero(ids!(left_column.mofa_hero))
+                        .set_connection_status(cx, ConnectionStatus::Connected);
+                    // Clear tracking state on new dataflow
+                    self.connected_bridges.clear();
+                    self.processed_dora_log_count = 0;
                 }
                 DoraEvent::DataflowStopped => {
                     ::log::info!("Dataflow stopped");
                     self.add_log(cx, "[INFO] [App] Dataflow stopped");
-                    self.view.mofa_hero(ids!(left_column.mofa_hero)).set_running(cx, false);
-                    self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Stopped);
+                    self.view
+                        .mofa_hero(ids!(left_column.mofa_hero))
+                        .set_running(cx, false);
+                    self.view
+                        .mofa_hero(ids!(left_column.mofa_hero))
+                        .set_connection_status(cx, ConnectionStatus::Stopped);
+                    // Clear tracking state on stop
+                    self.connected_bridges.clear();
+                    self.processed_dora_log_count = 0;
                 }
-                DoraEvent::BridgeConnected { bridge_name } => {
-                    ::log::info!("Bridge connected: {}", bridge_name);
-                    let display_name = Self::format_bridge_name(&bridge_name);
-                    self.add_log(cx, &format!("[INFO] [Bridge] {} connected to dora dataflow", display_name));
-                }
-                DoraEvent::BridgeDisconnected { bridge_name } => {
-                    ::log::info!("Bridge disconnected: {}", bridge_name);
-                    let display_name = Self::format_bridge_name(&bridge_name);
-                    self.add_log(cx, &format!("[WARN] [Bridge] {} disconnected from dora dataflow", display_name));
-                }
-                DoraEvent::ChatReceived { message } => {
-                    // Handle streaming message consolidation
-                    // Match by BOTH sender AND session_id to avoid confusion between participants
-                    let sender = message.sender.clone();
-                    let session_id = message.session_id.clone();
-
-                    // Debug logging for chat messages
-                    ::log::info!("[Chat] sender={}, session_id={:?}, is_streaming={}, content_len={}, pending_count={}, finalized_count={}",
-                        sender,
-                        session_id,
-                        message.is_streaming,
-                        message.content.len(),
-                        self.pending_streaming_messages.len(),
-                        self.chat_messages.len()
-                    );
-
-                    if message.is_streaming {
-                        // Update or create pending streaming message
-                        let entry = ChatMessageEntry {
-                            sender: sender.clone(),
-                            content: message.content.clone(),
-                            timestamp: message.timestamp,
-                            is_streaming: true,
-                            session_id: session_id.clone(),
-                        };
-
-                        // Find existing pending message with same sender AND session_id
-                        // (or same sender if session_id is "unknown")
-                        let found = self.pending_streaming_messages.iter_mut()
-                            .find(|m| {
-                                m.sender == sender && (
-                                    // Match by session_id if both have real session_ids
-                                    (m.session_id.as_ref().map(|s| s != "unknown").unwrap_or(false)
-                                        && session_id.as_ref().map(|s| s != "unknown").unwrap_or(false)
-                                        && m.session_id == session_id)
-                                    ||
-                                    // For "unknown" session_ids, just match by sender
-                                    (m.session_id.as_ref().map(|s| s == "unknown").unwrap_or(true)
-                                        && session_id.as_ref().map(|s| s == "unknown").unwrap_or(true))
-                                )
-                            });
-
-                        if let Some(pending) = found {
-                            // Update existing pending message
-                            pending.content = entry.content;
-                            pending.timestamp = entry.timestamp;
-                            pending.session_id = entry.session_id;
-                        } else {
-                            // Add new pending message
-                            self.pending_streaming_messages.push(entry);
-                        }
-
-                        // Update display with pending messages (shown but not finalized)
-                        self.update_chat_display(cx);
-                    } else {
-                        // Streaming complete - finalize the message
-                        let entry = ChatMessageEntry {
-                            sender: sender.clone(),
-                            content: message.content.clone(),
-                            timestamp: message.timestamp,
-                            is_streaming: false,
-                            session_id: session_id.clone(),
-                        };
-
-                        // Remove from pending - match by sender AND session_id
-                        self.pending_streaming_messages.retain(|m| {
-                            !(m.sender == sender && (
-                                m.session_id == session_id ||
-                                (m.session_id.as_ref().map(|s| s == "unknown").unwrap_or(true)
-                                    && session_id.as_ref().map(|s| s == "unknown").unwrap_or(true))
-                            ))
-                        });
-
-                        // Add to finalized messages
-                        self.chat_messages.push(entry);
-                        // Keep chat messages bounded (prevents O(n²) slowdown and markdown overflow)
-                        if self.chat_messages.len() > 500 {
-                            self.chat_messages.remove(0);
-                        }
-                        self.update_chat_display(cx);
-                    }
-                }
-                DoraEvent::LogReceived { entry } => {
-                    let level_str = format!("{:?}", entry.level).to_uppercase();
-                    let log_line = format!("[{}] [{}] {}", level_str, entry.node_id, entry.message);
-                    self.add_log(cx, &log_line);
-                }
-                DoraEvent::AudioReceived { data } => {
-                    // Forward to audio player for playback with question_id for smart reset
-                    if let Some(ref player) = self.audio_player {
-                        player.write_audio_with_question(
-                            &data.samples,
-                            data.participant_id.clone(),
-                            data.question_id.clone(),
-                        );
-                    }
-                }
-                // NOTE: ParticipantAudioReceived removed - LED visualization calculated below
-                // from output waveform (more accurate since it reflects what's actually playing)
                 DoraEvent::Error { message } => {
                     ::log::error!("Dora error: {}", message);
                     self.add_log(cx, &format!("[ERROR] [Dora] {}", message));
-                    self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Failed);
+                    self.view
+                        .mofa_hero(ids!(left_column.mofa_hero))
+                        .set_connection_status(cx, ConnectionStatus::Failed);
                 }
             }
         }
 
-        // Update audio buffer level in mofa_hero (from audio player)
-        let (is_playing, active_idx, waveform_data) = if let Some(ref player) = self.audio_player {
-            let buffer_pct = player.buffer_fill_percentage() / 100.0;
-            self.view.mofa_hero(ids!(left_column.mofa_hero)).set_buffer_level(cx, buffer_pct);
-            (player.is_playing(), player.current_participant_idx(), player.get_waveform_data())
-        } else {
-            (false, None, Vec::new())
-        };
+        // Update audio buffer level in audio panel (from audio player)
+        // Extract all data first to avoid borrow conflicts with update_buffer_level
+        let (buffer_pct, is_playing, active_idx, waveform_data) =
+            if let Some(ref player) = self.audio_player {
+                let pct = player.buffer_fill_percentage() / 100.0;
+                (
+                    Some(pct),
+                    player.is_playing(),
+                    player.current_participant_idx(),
+                    player.get_waveform_data(),
+                )
+            } else {
+                (None, false, None, Vec::new())
+            };
+        if let Some(pct) = buffer_pct {
+            self.update_buffer_level(cx, pct);
+        }
 
         {
             // Calculate band levels from waveform data (same as conference-dashboard)
@@ -235,7 +281,10 @@ impl MoFaFMScreen {
                 let samples = &waveform_data;
                 let band_size = samples.len() / 8;
                 let mut levels = [0.0f32; 8];
-                let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, |a, b| a.max(b));
+                let peak = samples
+                    .iter()
+                    .map(|s| s.abs())
+                    .fold(0.0f32, |a, b| a.max(b));
                 let norm_factor = if peak > 0.01 { 1.0 / peak } else { 1.0 };
 
                 for i in 0..8 {
@@ -252,9 +301,24 @@ impl MoFaFMScreen {
 
             // Update participant panels using direct apply_over (exactly like conference-dashboard)
             let panel_ids: [&[LiveId]; 3] = [
-                ids!(left_column.participant_container.participant_bar.student1_panel),
-                ids!(left_column.participant_container.participant_bar.student2_panel),
-                ids!(left_column.participant_container.participant_bar.tutor_panel),
+                ids!(
+                    left_column
+                        .participant_container
+                        .participant_bar
+                        .student1_panel
+                ),
+                ids!(
+                    left_column
+                        .participant_container
+                        .participant_bar
+                        .student2_panel
+                ),
+                ids!(
+                    left_column
+                        .participant_container
+                        .participant_bar
+                        .tutor_panel
+                ),
             ];
 
             for (i, panel_id) in panel_ids.into_iter().enumerate() {
@@ -327,7 +391,6 @@ impl MoFaFMScreen {
 
         // Clear chat window and system log
         self.chat_messages.clear();
-        self.pending_streaming_messages.clear();
         self.last_chat_count = 0;
         self.update_chat_display(cx);
         self.clear_logs(cx);
@@ -341,16 +404,24 @@ impl MoFaFMScreen {
         // Log which keys are available
         let has_openai = env_vars.contains_key("OPENAI_API_KEY");
         let has_deepseek = env_vars.contains_key("DEEPSEEK_API_KEY");
-        self.add_log(cx, &format!("[INFO] [App] API Keys: OpenAI={}, DeepSeek={}",
-            if has_openai { "✓" } else { "✗" },
-            if has_deepseek { "✓" } else { "✗" }
-        ));
+        self.add_log(
+            cx,
+            &format!(
+                "[INFO] [App] API Keys: OpenAI={}, DeepSeek={}",
+                if has_openai { "✓" } else { "✗" },
+                if has_deepseek { "✓" } else { "✗" }
+            ),
+        );
 
         // Find the dataflow file relative to current working directory
         let dataflow_path = self.dataflow_path.clone().unwrap_or_else(|| {
             let cwd = std::env::current_dir().unwrap_or_default();
             // First try: apps/mofa-fm/dataflow/voice-chat.yml (when running from workspace root)
-            let app_path = cwd.join("apps").join("mofa-fm").join("dataflow").join("voice-chat.yml");
+            let app_path = cwd
+                .join("apps")
+                .join("mofa-fm")
+                .join("dataflow")
+                .join("voice-chat.yml");
             if app_path.exists() {
                 return app_path;
             }
@@ -359,22 +430,36 @@ impl MoFaFMScreen {
         });
 
         if !dataflow_path.exists() {
-            self.add_log(cx, &format!("[ERROR] [App] Dataflow not found: {:?}", dataflow_path));
-            self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Failed);
+            self.add_log(
+                cx,
+                &format!("[ERROR] [App] Dataflow not found: {:?}", dataflow_path),
+            );
+            self.view
+                .mofa_hero(ids!(left_column.mofa_hero))
+                .set_connection_status(cx, ConnectionStatus::Failed);
             return;
         }
 
-        self.add_log(cx, &format!("[INFO] [App] Starting dataflow: {:?}", dataflow_path));
+        self.add_log(
+            cx,
+            &format!("[INFO] [App] Starting dataflow: {:?}", dataflow_path),
+        );
 
         // Update UI state - show connecting
-        self.view.mofa_hero(ids!(left_column.mofa_hero)).set_running(cx, true);
-        self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Connecting);
+        self.view
+            .mofa_hero(ids!(left_column.mofa_hero))
+            .set_running(cx, true);
+        self.view
+            .mofa_hero(ids!(left_column.mofa_hero))
+            .set_connection_status(cx, ConnectionStatus::Connecting);
 
         // Start dataflow with environment variables
         if let Some(ref dora) = self.dora_integration {
             if !dora.start_dataflow_with_env(&dataflow_path, env_vars) {
                 self.add_log(cx, "[ERROR] [App] Failed to send start command");
-                self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Failed);
+                self.view
+                    .mofa_hero(ids!(left_column.mofa_hero))
+                    .set_connection_status(cx, ConnectionStatus::Failed);
             }
         }
 
@@ -388,7 +473,9 @@ impl MoFaFMScreen {
         self.add_log(cx, "[INFO] [App] Force stopping MoFA dataflow...");
 
         // Show "Stopping" state while stop is in progress
-        self.view.mofa_hero(ids!(left_column.mofa_hero)).set_connection_status(cx, ConnectionStatus::Stopping);
+        self.view
+            .mofa_hero(ids!(left_column.mofa_hero))
+            .set_connection_status(cx, ConnectionStatus::Stopping);
 
         // Force stop dataflow immediately (0s grace period)
         // The actual status update will come from DoraEvent::DataflowStopped
@@ -401,31 +488,32 @@ impl MoFaFMScreen {
     }
 
     /// Load API keys from preferences
+    /// Exports all provider API keys including custom providers
     pub(super) fn load_api_keys_from_preferences(&self) -> HashMap<String, String> {
         let mut env_vars = HashMap::new();
 
         // Load preferences
         let prefs = Preferences::load();
 
-        // Get OpenAI API key
-        if let Some(provider) = prefs.get_provider("openai") {
+        // Export API keys for ALL providers (built-in and custom)
+        for provider in &prefs.providers {
             if let Some(ref api_key) = provider.api_key {
                 if !api_key.is_empty() {
-                    env_vars.insert("OPENAI_API_KEY".to_string(), api_key.clone());
+                    // Map provider ID to standard env var name
+                    let env_var_name = match provider.id.as_str() {
+                        "openai" => "OPENAI_API_KEY".to_string(),
+                        "deepseek" => "DEEPSEEK_API_KEY".to_string(),
+                        "alibaba_cloud" => "ALIBABA_CLOUD_API_KEY".to_string(),
+                        "nvidia" => "NVIDIA_API_KEY".to_string(),
+                        // For custom providers, use uppercase ID + _API_KEY
+                        id => format!("{}_API_KEY", id.to_uppercase().replace('-', "_")),
+                    };
+                    env_vars.insert(env_var_name, api_key.clone());
                 }
             }
         }
 
-        // Get DeepSeek API key
-        if let Some(provider) = prefs.get_provider("deepseek") {
-            if let Some(ref api_key) = provider.api_key {
-                if !api_key.is_empty() {
-                    env_vars.insert("DEEPSEEK_API_KEY".to_string(), api_key.clone());
-                }
-            }
-        }
-
-        // Get Alibaba Cloud API key
+        // Also export DASHSCOPE_API_KEY for backwards compatibility with alibaba_cloud
         if let Some(provider) = prefs.get_provider("alibaba_cloud") {
             if let Some(ref api_key) = provider.api_key {
                 if !api_key.is_empty() {

@@ -1,7 +1,7 @@
-//! MofaHero Widget - System status bar with Dataflow, Audio Buffer, CPU, and Memory panels
+//! MofaHero Widget - System status bar with Dataflow, CPU, Memory, GPU, and VRAM panels
 
+use crate::system_monitor;
 use makepad_widgets::*;
-use sysinfo::System;
 
 live_design! {
     use link::theme::*;
@@ -21,10 +21,36 @@ live_design! {
     ICO_START = dep("crate://self/resources/icons/start.svg")
     ICO_STOP = dep("crate://self/resources/icons/stop.svg")
 
-    // Dataflow status button (Ready/Connected/Failed with color change) - taller to fit text
+    // Dataflow status button (Ready/Connected/Failed with color change) with hover animation
     DataflowButton = <Button> {
         width: Fill, height: 22
         text: "Connected"
+
+        animator: {
+            hover = {
+                default: off,
+                off = {
+                    from: {all: Forward {duration: 0.15}}
+                    apply: { draw_bg: {hover: 0.0} }
+                }
+                on = {
+                    from: {all: Forward {duration: 0.15}}
+                    apply: { draw_bg: {hover: 1.0} }
+                }
+            }
+            pressed = {
+                default: off,
+                off = {
+                    from: {all: Forward {duration: 0.1}}
+                    apply: { draw_bg: {pressed: 0.0} }
+                }
+                on = {
+                    from: {all: Forward {duration: 0.1}}
+                    apply: { draw_bg: {pressed: 1.0} }
+                }
+            }
+        }
+
         draw_text: {
             color: (WHITE)
             text_style: <FONT_SEMIBOLD>{ font_size: 10.0 }
@@ -34,6 +60,8 @@ live_design! {
             }
         }
         draw_bg: {
+            instance hover: 0.0
+            instance pressed: 0.0
             instance status: 0.0  // 0=ready(green), 1=connected(neon green, blinking), 2=failed(red)
             instance blink: 0.0   // blink phase for animation
             border_radius: 4.0
@@ -53,16 +81,22 @@ live_design! {
 
                 // Apply blinking for connected state (status ~ 1.0)
                 let blink_factor = smoothstep(
-                    0.4 - 0.1 * sin(self.blink * 12.566),  // 60Hz = 2*pi*60, divide by frames for smooth
+                    0.4 - 0.1 * sin(self.blink * 12.566),
                     0.6 + 0.1 * sin(self.blink * 12.566),
-                    step(0.5, self.status) * (1.0 - step(1.5, self.status))  // Only when status is ~1.0
+                    step(0.5, self.status) * (1.0 - step(1.5, self.status))
                 );
 
                 // Mix between base color and neon green based on blink
                 let final_color = mix(base_color, neon_green, blink_factor * step(0.5, self.status) * (1.0 - step(1.5, self.status)));
 
+                // Darken on hover/press
+                let hover_darken = 0.85;
+                let press_darken = 0.75;
+                let darken = mix(1.0, mix(hover_darken, press_darken, self.pressed), self.hover);
+                let color = final_color * darken;
+
                 sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
-                sdf.fill(final_color);
+                sdf.fill(vec4(color.xyz, final_color.w));
                 return sdf.result;
             }
         }
@@ -197,8 +231,13 @@ live_design! {
         draw_bg: {
             instance dark_mode: 0.0
             border_radius: (HERO_RADIUS)
-            fn get_color(self) -> vec4 {
-                return mix((PANEL_BG), (PANEL_BG_DARK), self.dark_mode);
+            fn pixel(self) -> vec4 {
+                let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                let r = self.border_radius;
+                let bg = mix((PANEL_BG), (PANEL_BG_DARK), self.dark_mode);
+                sdf.box(0., 0., self.rect_size.x, self.rect_size.y, r);
+                sdf.fill(bg);
+                return sdf.result;
             }
         }
         flow: Down
@@ -240,8 +279,13 @@ live_design! {
             draw_bg: {
                 instance dark_mode: 0.0
                 border_radius: (HERO_RADIUS)
-                fn get_color(self) -> vec4 {
-                    return mix((PANEL_BG), (PANEL_BG_DARK), self.dark_mode);
+                fn pixel(self) -> vec4 {
+                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                    let r = self.border_radius;
+                    let bg = mix((PANEL_BG), (PANEL_BG_DARK), self.dark_mode);
+                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, r);
+                    sdf.fill(bg);
+                    return sdf.result;
                 }
             }
             flow: Down
@@ -329,27 +373,6 @@ live_design! {
             }
         }
 
-        // Audio Buffer section
-        buffer_section = <StatusSection> {
-            <View> {
-                width: Fill, height: Fit
-                flow: Right
-                spacing: 6
-                align: {x: 0.0, y: 0.5}
-
-                buffer_dot = <StatusDot> {}
-                buffer_label = <StatusLabel> {
-                    text: "Audio Buffer"
-                }
-            }
-
-            buffer_gauge = <LedGauge> {}
-
-            buffer_pct = <PctLabel> {
-                text: "0%"
-            }
-        }
-
         // CPU section
         cpu_section = <StatusSection> {
             <View> {
@@ -391,6 +414,48 @@ live_design! {
                 text: "0%"
             }
         }
+
+        // GPU section
+        gpu_section = <StatusSection> {
+            <View> {
+                width: Fill, height: Fit
+                flow: Right
+                spacing: 6
+                align: {x: 0.0, y: 0.5}
+
+                gpu_dot = <StatusDot> {}
+                gpu_label = <StatusLabel> {
+                    text: "GPU"
+                }
+            }
+
+            gpu_gauge = <LedGauge> {}
+
+            gpu_pct = <PctLabel> {
+                text: "N/A"
+            }
+        }
+
+        // VRAM section
+        vram_section = <StatusSection> {
+            <View> {
+                width: Fill, height: Fit
+                flow: Right
+                spacing: 6
+                align: {x: 0.0, y: 0.5}
+
+                vram_dot = <StatusDot> {}
+                vram_label = <StatusLabel> {
+                    text: "VRAM"
+                }
+            }
+
+            vram_gauge = <LedGauge> {}
+
+            vram_pct = <PctLabel> {
+                text: "N/A"
+            }
+        }
     }
 }
 
@@ -411,25 +476,28 @@ pub struct MofaHero {
     is_running: bool,
 
     #[rust]
-    buffer_level: f64,
-
-    #[rust]
     cpu_usage: f64,
 
     #[rust]
     memory_usage: f64,
 
     #[rust]
-    connection_status: ConnectionStatus,
+    gpu_usage: f64,
 
     #[rust]
-    sys: Option<System>,
+    vram_usage: f64,
+
+    #[rust]
+    connection_status: ConnectionStatus,
 
     #[rust]
     timer: Timer,
 
     #[rust]
-    blink_phase: f64,  // For blinking animation
+    monitor_started: bool,
+
+    #[rust]
+    blink_phase: f64, // For blinking animation
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -447,10 +515,11 @@ impl Widget for MofaHero {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
 
-        // Initialize system info on first event
-        if self.sys.is_none() {
-            self.sys = Some(System::new_all());
-            // Start timer for periodic updates (every 1 second)
+        // Start background system monitor on first event
+        if !self.monitor_started {
+            system_monitor::start_system_monitor();
+            self.monitor_started = true;
+            // Start timer for periodic UI updates (every 1 second)
             self.timer = cx.start_interval(1.0);
         }
 
@@ -481,13 +550,18 @@ impl Widget for MofaHero {
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         // Update blink animation for connected state (60Hz blinking)
         let time = Cx::time_now();
-        self.blink_phase = time * 6.0;  // Scaled for smooth blinking
+        self.blink_phase = time * 6.0; // Scaled for smooth blinking
 
         // Apply blink value to button when connected
         if self.connection_status == ConnectionStatus::Connected {
-            self.view.button(ids!(connection_section.dataflow_btn)).apply_over(cx, live! {
-                draw_bg: { blink: (self.blink_phase) }
-            });
+            self.view
+                .button(ids!(connection_section.dataflow_btn))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_bg: { blink: (self.blink_phase) }
+                    },
+                );
             // Request next frame for continuous animation
             cx.new_next_frame();
         }
@@ -497,56 +571,120 @@ impl Widget for MofaHero {
 }
 
 impl MofaHero {
-    /// Update system stats from sysinfo
+    /// Update system stats from background monitor
     fn update_system_stats(&mut self, cx: &mut Cx) {
-        // Get values from sys first to avoid borrow issues
-        let (cpu_usage, memory_usage) = if let Some(ref mut sys) = self.sys {
-            sys.refresh_cpu_usage();
-            sys.refresh_memory();
+        // Read values from background system monitor
+        let cpu_usage = system_monitor::get_cpu_usage();
+        let memory_usage = system_monitor::get_memory_usage();
+        let gpu_usage = system_monitor::get_gpu_usage();
+        let vram_usage = system_monitor::get_vram_usage();
+        let gpu_available = system_monitor::is_gpu_available();
 
-            let cpu = sys.global_cpu_usage() as f64 / 100.0;
-
-            let total_memory = sys.total_memory() as f64;
-            let used_memory = sys.used_memory() as f64;
-            let memory = if total_memory > 0.0 {
-                used_memory / total_memory
-            } else {
-                0.0
-            };
-
-            (cpu, memory)
-        } else {
-            return;
-        };
-
-        // Now update UI with the values
+        // Update UI with the values
         self.set_cpu_usage_internal(cx, cpu_usage);
         self.set_memory_usage_internal(cx, memory_usage);
+        self.set_gpu_usage_internal(cx, gpu_usage, gpu_available);
+        self.set_vram_usage_internal(cx, vram_usage, gpu_available);
     }
 
     /// Set the running state (shows start or stop view - matches conference-dashboard)
     pub fn set_running(&mut self, cx: &mut Cx, running: bool) {
         self.is_running = running;
-        self.view.view(ids!(action_section.start_view)).set_visible(cx, !running);
-        self.view.view(ids!(action_section.stop_view)).set_visible(cx, running);
+        self.view
+            .view(ids!(action_section.start_view))
+            .set_visible(cx, !running);
+        self.view
+            .view(ids!(action_section.stop_view))
+            .set_visible(cx, running);
         self.view.redraw(cx);
     }
 
-    /// Set the buffer level (0.0 - 1.0)
-    pub fn set_buffer_level(&mut self, cx: &mut Cx, level: f64) {
-        self.buffer_level = level.clamp(0.0, 1.0);
+    /// Internal GPU usage update
+    fn set_gpu_usage_internal(&mut self, cx: &mut Cx, usage: f64, available: bool) {
+        self.gpu_usage = usage.clamp(0.0, 1.0);
 
-        self.view.view(ids!(buffer_section.buffer_gauge)).apply_over(cx, live! {
-            draw_bg: { fill_pct: (self.buffer_level) }
-        });
+        if available {
+            self.view.view(ids!(gpu_section.gpu_gauge)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { fill_pct: (self.gpu_usage) }
+                },
+            );
 
-        let pct_text = format!("{}%", (self.buffer_level * 100.0) as u32);
-        self.view.label(ids!(buffer_section.buffer_pct)).set_text(cx, &pct_text);
+            let pct_text = format!("{}%", (self.gpu_usage * 100.0) as u32);
+            self.view
+                .label(ids!(gpu_section.gpu_pct))
+                .set_text(cx, &pct_text);
 
-        let status = if self.buffer_level < 0.8 { 1.0 } else if self.buffer_level < 0.95 { 2.0 } else { 3.0 };
-        self.view.view(ids!(buffer_section.buffer_dot)).apply_over(cx, live! {
-            draw_bg: { status: (status) }
-        });
+            let status = if self.gpu_usage < 0.7 {
+                1.0
+            } else if self.gpu_usage < 0.9 {
+                2.0
+            } else {
+                3.0
+            };
+            self.view.view(ids!(gpu_section.gpu_dot)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { status: (status) }
+                },
+            );
+        } else {
+            self.view
+                .label(ids!(gpu_section.gpu_pct))
+                .set_text(cx, "N/A");
+            self.view.view(ids!(gpu_section.gpu_dot)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { status: 0.0 }
+                },
+            );
+        }
+
+        self.view.redraw(cx);
+    }
+
+    /// Internal VRAM usage update
+    fn set_vram_usage_internal(&mut self, cx: &mut Cx, usage: f64, available: bool) {
+        self.vram_usage = usage.clamp(0.0, 1.0);
+
+        if available {
+            self.view.view(ids!(vram_section.vram_gauge)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { fill_pct: (self.vram_usage) }
+                },
+            );
+
+            let pct_text = format!("{}%", (self.vram_usage * 100.0) as u32);
+            self.view
+                .label(ids!(vram_section.vram_pct))
+                .set_text(cx, &pct_text);
+
+            let status = if self.vram_usage < 0.7 {
+                1.0
+            } else if self.vram_usage < 0.9 {
+                2.0
+            } else {
+                3.0
+            };
+            self.view.view(ids!(vram_section.vram_dot)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { status: (status) }
+                },
+            );
+        } else {
+            self.view
+                .label(ids!(vram_section.vram_pct))
+                .set_text(cx, "N/A");
+            self.view.view(ids!(vram_section.vram_dot)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { status: 0.0 }
+                },
+            );
+        }
 
         self.view.redraw(cx);
     }
@@ -555,17 +693,31 @@ impl MofaHero {
     fn set_cpu_usage_internal(&mut self, cx: &mut Cx, usage: f64) {
         self.cpu_usage = usage.clamp(0.0, 1.0);
 
-        self.view.view(ids!(cpu_section.cpu_gauge)).apply_over(cx, live! {
-            draw_bg: { fill_pct: (self.cpu_usage) }
-        });
+        self.view.view(ids!(cpu_section.cpu_gauge)).apply_over(
+            cx,
+            live! {
+                draw_bg: { fill_pct: (self.cpu_usage) }
+            },
+        );
 
         let pct_text = format!("{}%", (self.cpu_usage * 100.0) as u32);
-        self.view.label(ids!(cpu_section.cpu_pct)).set_text(cx, &pct_text);
+        self.view
+            .label(ids!(cpu_section.cpu_pct))
+            .set_text(cx, &pct_text);
 
-        let status = if self.cpu_usage < 0.7 { 1.0 } else if self.cpu_usage < 0.9 { 2.0 } else { 3.0 };
-        self.view.view(ids!(cpu_section.cpu_dot)).apply_over(cx, live! {
-            draw_bg: { status: (status) }
-        });
+        let status = if self.cpu_usage < 0.7 {
+            1.0
+        } else if self.cpu_usage < 0.9 {
+            2.0
+        } else {
+            3.0
+        };
+        self.view.view(ids!(cpu_section.cpu_dot)).apply_over(
+            cx,
+            live! {
+                draw_bg: { status: (status) }
+            },
+        );
 
         self.view.redraw(cx);
     }
@@ -579,17 +731,33 @@ impl MofaHero {
     fn set_memory_usage_internal(&mut self, cx: &mut Cx, usage: f64) {
         self.memory_usage = usage.clamp(0.0, 1.0);
 
-        self.view.view(ids!(memory_section.memory_gauge)).apply_over(cx, live! {
-            draw_bg: { fill_pct: (self.memory_usage) }
-        });
+        self.view
+            .view(ids!(memory_section.memory_gauge))
+            .apply_over(
+                cx,
+                live! {
+                    draw_bg: { fill_pct: (self.memory_usage) }
+                },
+            );
 
         let pct_text = format!("{}%", (self.memory_usage * 100.0) as u32);
-        self.view.label(ids!(memory_section.memory_pct)).set_text(cx, &pct_text);
+        self.view
+            .label(ids!(memory_section.memory_pct))
+            .set_text(cx, &pct_text);
 
-        let status = if self.memory_usage < 0.7 { 1.0 } else if self.memory_usage < 0.9 { 2.0 } else { 3.0 };
-        self.view.view(ids!(memory_section.memory_dot)).apply_over(cx, live! {
-            draw_bg: { status: (status) }
-        });
+        let status = if self.memory_usage < 0.7 {
+            1.0
+        } else if self.memory_usage < 0.9 {
+            2.0
+        } else {
+            3.0
+        };
+        self.view.view(ids!(memory_section.memory_dot)).apply_over(
+            cx,
+            live! {
+                draw_bg: { status: (status) }
+            },
+        );
 
         self.view.redraw(cx);
     }
@@ -604,21 +772,33 @@ impl MofaHero {
         self.connection_status = status.clone();
 
         let (status_val, text, dot_color) = match status {
-            ConnectionStatus::Ready => (0.0, "Ready", (0.13, 0.77, 0.37)),        // Green
+            ConnectionStatus::Ready => (0.0, "Ready", (0.13, 0.77, 0.37)), // Green
             ConnectionStatus::Connecting => (0.5, "Connecting", (0.8, 0.8, 0.0)), // Yellow
-            ConnectionStatus::Connected => (1.0, "Connected", (0.0, 1.0, 0.5)),   // Neon green
-            ConnectionStatus::Stopping => (0.5, "Stopping", (0.8, 0.6, 0.0)),     // Orange
-            ConnectionStatus::Stopped => (0.0, "Stopped", (0.5, 0.5, 0.5)),       // Gray
-            ConnectionStatus::Failed => (2.0, "Failed", (0.95, 0.25, 0.25)),      // Red
+            ConnectionStatus::Connected => (1.0, "Connected", (0.0, 1.0, 0.5)), // Neon green
+            ConnectionStatus::Stopping => (0.5, "Stopping", (0.8, 0.6, 0.0)), // Orange
+            ConnectionStatus::Stopped => (0.0, "Stopped", (0.5, 0.5, 0.5)), // Gray
+            ConnectionStatus::Failed => (2.0, "Failed", (0.95, 0.25, 0.25)), // Red
         };
 
-        self.view.button(ids!(connection_section.dataflow_btn)).set_text(cx, text);
-        self.view.button(ids!(connection_section.dataflow_btn)).apply_over(cx, live! {
-            draw_bg: { status: (status_val) }
-        });
-        self.view.view(ids!(connection_section.connection_dot)).apply_over(cx, live! {
-            draw_bg: { color: (vec4(dot_color.0, dot_color.1, dot_color.2, 1.0)) }
-        });
+        self.view
+            .button(ids!(connection_section.dataflow_btn))
+            .set_text(cx, text);
+        self.view
+            .button(ids!(connection_section.dataflow_btn))
+            .apply_over(
+                cx,
+                live! {
+                    draw_bg: { status: (status_val) }
+                },
+            );
+        self.view
+            .view(ids!(connection_section.connection_dot))
+            .apply_over(
+                cx,
+                live! {
+                    draw_bg: { color: (vec4(dot_color.0, dot_color.1, dot_color.2, 1.0)) }
+                },
+            );
 
         self.view.redraw(cx);
     }
@@ -633,12 +813,6 @@ impl MofaHeroRef {
     pub fn set_running(&self, cx: &mut Cx, running: bool) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_running(cx, running);
-        }
-    }
-
-    pub fn set_buffer_level(&self, cx: &mut Cx, level: f64) {
-        if let Some(mut inner) = self.borrow_mut() {
-            inner.set_buffer_level(cx, level);
         }
     }
 
@@ -664,56 +838,133 @@ impl MofaHeroRef {
     pub fn update_dark_mode(&self, cx: &mut Cx, dark_mode: f64) {
         if let Some(mut inner) = self.borrow_mut() {
             // Action section
-            inner.view.view(ids!(action_section)).apply_over(cx, live!{
-                draw_bg: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(action_section.start_view.action_start_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(action_section.stop_view.action_stop_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
+            inner.view.view(ids!(action_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner
+                .view
+                .label(ids!(action_section.start_view.action_start_label))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_text: { dark_mode: (dark_mode) }
+                    },
+                );
+            inner
+                .view
+                .label(ids!(action_section.stop_view.action_stop_label))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_text: { dark_mode: (dark_mode) }
+                    },
+                );
 
             // Connection section
-            inner.view.view(ids!(connection_section)).apply_over(cx, live!{
-                draw_bg: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(connection_section.dataflow_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
-
-            // Buffer section
-            inner.view.view(ids!(buffer_section)).apply_over(cx, live!{
-                draw_bg: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(buffer_section.buffer_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(buffer_section.buffer_pct)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
+            inner.view.view(ids!(connection_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner
+                .view
+                .label(ids!(connection_section.dataflow_label))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_text: { dark_mode: (dark_mode) }
+                    },
+                );
 
             // CPU section
-            inner.view.view(ids!(cpu_section)).apply_over(cx, live!{
-                draw_bg: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(cpu_section.cpu_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(cpu_section.cpu_pct)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
+            inner.view.view(ids!(cpu_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(cpu_section.cpu_label)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(cpu_section.cpu_pct)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
 
             // Memory section
-            inner.view.view(ids!(memory_section)).apply_over(cx, live!{
-                draw_bg: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(memory_section.memory_label)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
-            inner.view.label(ids!(memory_section.memory_pct)).apply_over(cx, live!{
-                draw_text: { dark_mode: (dark_mode) }
-            });
+            inner.view.view(ids!(memory_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner
+                .view
+                .label(ids!(memory_section.memory_label))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_text: { dark_mode: (dark_mode) }
+                    },
+                );
+            inner
+                .view
+                .label(ids!(memory_section.memory_pct))
+                .apply_over(
+                    cx,
+                    live! {
+                        draw_text: { dark_mode: (dark_mode) }
+                    },
+                );
+
+            // GPU section
+            inner.view.view(ids!(gpu_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(gpu_section.gpu_label)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(gpu_section.gpu_pct)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
+
+            // VRAM section
+            inner.view.view(ids!(vram_section)).apply_over(
+                cx,
+                live! {
+                    draw_bg: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(vram_section.vram_label)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
+            inner.view.label(ids!(vram_section.vram_pct)).apply_over(
+                cx,
+                live! {
+                    draw_text: { dark_mode: (dark_mode) }
+                },
+            );
 
             inner.view.redraw(cx);
         }
