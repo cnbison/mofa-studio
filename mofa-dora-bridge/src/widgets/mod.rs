@@ -11,7 +11,9 @@
 mod audio_player;
 mod system_log;
 mod prompt_input;
+mod cast_controller;
 
 pub use audio_player::AudioPlayerBridge;
 pub use system_log::SystemLogBridge;
 pub use prompt_input::PromptInputBridge;
+pub use cast_controller::CastControllerBridge;

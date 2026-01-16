@@ -8,7 +8,7 @@ use crate::bridge::{BridgeEvent, BridgeState, DoraBridge};
 use crate::controller::DataflowController;
 use crate::error::{BridgeError, BridgeResult};
 use crate::parser::MofaNodeSpec;
-use crate::widgets::{AudioPlayerBridge, PromptInputBridge, SystemLogBridge};
+use crate::widgets::{AudioPlayerBridge, PromptInputBridge, SystemLogBridge, CastControllerBridge};
 use crate::MofaNodeType;
 use crossbeam_channel::Receiver;
 use std::collections::HashMap;
@@ -69,8 +69,10 @@ impl DynamicNodeDispatcher {
     /// Create bridges for all discovered MoFA nodes
     pub fn create_bridges(&mut self) -> BridgeResult<()> {
         let mofa_nodes = self.discover_mofa_nodes();
+        info!("Creating bridges for {} discovered mofa nodes", mofa_nodes.len());
 
         for node_spec in mofa_nodes {
+            info!("Creating bridge for node '{}' (type: {:?})", node_spec.id, node_spec.node_type);
             let bridge: Box<dyn DoraBridge> = match node_spec.node_type {
                 MofaNodeType::AudioPlayer => {
                     Box::new(AudioPlayerBridge::new(&node_spec.id))
@@ -80,6 +82,9 @@ impl DynamicNodeDispatcher {
                 }
                 MofaNodeType::PromptInput => {
                     Box::new(PromptInputBridge::new(&node_spec.id))
+                }
+                MofaNodeType::MoFACast => {
+                    Box::new(CastControllerBridge::new(&node_spec.id))
                 }
                 MofaNodeType::MicInput => {
                     // TODO: Implement MicInputBridge
@@ -212,6 +217,11 @@ impl DynamicNodeDispatcher {
         // This is necessary because `dora start --detach` returns immediately
         info!("Waiting for dataflow to initialize...");
         std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Additional wait for TTS nodes to load their models
+        // Kokoro TTS needs time to load MLX/CPU models before accepting input
+        info!("Waiting for TTS nodes to load models...");
+        std::thread::sleep(std::time::Duration::from_secs(3));
 
         // Create bridges if not already created
         if self.bridges.is_empty() {

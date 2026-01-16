@@ -58,6 +58,8 @@ pub enum MofaNodeType {
     ChatViewer,
     /// Participant panel widget - receives audio and calculates levels for visualization
     ParticipantPanel,
+    /// MoFA Cast widget - sends script segments, receives audio
+    MoFACast,
 }
 
 impl MofaNodeType {
@@ -70,6 +72,7 @@ impl MofaNodeType {
             MofaNodeType::MicInput => "mofa-mic-input",
             MofaNodeType::ChatViewer => "mofa-chat-viewer",
             MofaNodeType::ParticipantPanel => "mofa-participant-panel",
+            MofaNodeType::MoFACast => "mofa-cast-controller",
         }
     }
 
@@ -82,6 +85,7 @@ impl MofaNodeType {
             "mofa-mic-input" => Some(MofaNodeType::MicInput),
             "mofa-chat-viewer" => Some(MofaNodeType::ChatViewer),
             "mofa-participant-panel" => Some(MofaNodeType::ParticipantPanel),
+            "mofa-cast-controller" => Some(MofaNodeType::MoFACast),
             _ => None,
         }
     }

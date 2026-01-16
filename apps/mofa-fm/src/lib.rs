@@ -5,6 +5,7 @@ pub mod mofa_hero;
 pub mod audio;
 pub mod audio_player;
 pub mod dora_integration;
+pub mod dora_process_manager;
 pub mod log_bridge;
 
 pub use screen::MoFaFMScreen;

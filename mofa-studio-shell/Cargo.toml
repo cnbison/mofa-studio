@@ -4,15 +4,17 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["mofa-fm", "mofa-settings"]
+default = ["mofa-fm", "mofa-settings", "mofa-cast"]
 mofa-fm = ["dep:mofa-fm"]
 mofa-settings = ["dep:mofa-settings"]
+mofa-cast = ["dep:mofa-cast"]
 
 [dependencies]
 makepad-widgets.workspace = true
 mofa-widgets = { path = "../mofa-widgets" }
 mofa-fm = { path = "../apps/mofa-fm", optional = true }
 mofa-settings = { path = "../apps/mofa-settings", optional = true }
+mofa-cast = { path = "../apps/mofa-cast", optional = true }
 
 # Audio
 cpal.workspace = true

@@ -6,6 +6,7 @@
 # docs
 a.训练文档docs/
 a.mofa_explainer文档/
+lbcsoft/
 
 # Cargo.lock for applications (keep for reproducible builds)
 # Uncomment the next line if you want to ignore it:
@@ -41,6 +42,7 @@ Desktop.ini
 # Dora output directories
 out/
 **/out/
+output/
 
 # Python build artifacts
 *.egg-info/

@@ -330,16 +330,16 @@ impl DoraBridge for SystemLogBridge {
             loop {
                 if start.elapsed() > timeout {
                     warn!("System log bridge disconnect timeout after {:?}", timeout);
+                    // Don't try to join after timeout - let the thread finish on its own
                     break;
                 }
 
-                if !handle.is_finished() {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    continue;
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    break;
                 }
 
-                let _ = handle.join();
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
 

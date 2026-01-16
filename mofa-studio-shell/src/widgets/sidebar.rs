@@ -196,6 +196,13 @@ live_design! {
             }
         }
 
+        mofa_cast_tab = <SidebarMenuButton> {
+            text: "MoFA Cast"
+            draw_icon: {
+                svg_file: dep("crate://self/resources/icons/cast.svg")
+            }
+        }
+
         // Apps container - height Fit so it adapts to content
         apps_wrapper = <View> {
             width: Fill, height: Fit
@@ -275,6 +282,7 @@ live_design! {
 #[derive(Clone, PartialEq)]
 pub enum SidebarSelection {
     MofaFM,
+    MofaCast,
     App(usize),  // 1-20
     Settings,
 }
@@ -352,6 +360,11 @@ impl Widget for Sidebar {
             self.handle_selection(cx, SidebarSelection::MofaFM);
         }
 
+        // Handle MoFA Cast tab click
+        if self.view.button(ids!(mofa_cast_tab)).clicked(actions) {
+            self.handle_selection(cx, SidebarSelection::MofaCast);
+        }
+
         // Handle Settings tab click
         if self.view.button(ids!(settings_tab)).clicked(actions) {
             self.handle_selection(cx, SidebarSelection::Settings);
@@ -424,6 +437,12 @@ impl Sidebar {
                 self.pinned_app_name = None;
                 self.view.button(ids!(apps_wrapper.apps_scroll.pinned_app_btn)).set_visible(cx, false);
             }
+            SidebarSelection::MofaCast => {
+                self.view.button(ids!(mofa_cast_tab)).apply_over(cx, live!{ draw_bg: { selected: 1.0 } });
+                // Hide pinned app when MoFA Cast is selected
+                self.pinned_app_name = None;
+                self.view.button(ids!(apps_wrapper.apps_scroll.pinned_app_btn)).set_visible(cx, false);
+            }
             SidebarSelection::App(app_idx) => {
                 self.set_app_button_selected(cx, *app_idx, true);
 
@@ -461,9 +480,10 @@ impl Sidebar {
             };
         }
 
-        // Clear MoFA FM, Settings, and pinned app
+        // Clear MoFA FM, MoFA Cast, Settings, and pinned app
         clear_selection!(self, cx,
             ids!(mofa_fm_tab),
+            ids!(mofa_cast_tab),
             ids!(settings_tab),
             ids!(apps_wrapper.apps_scroll.pinned_app_btn)
         );
@@ -576,6 +596,9 @@ impl SidebarRef {
                 match selection {
                     SidebarSelection::MofaFM => {
                         inner.view.button(ids!(mofa_fm_tab)).apply_over(cx, live!{ draw_bg: { selected: 1.0 } });
+                    }
+                    SidebarSelection::MofaCast => {
+                        inner.view.button(ids!(mofa_cast_tab)).apply_over(cx, live!{ draw_bg: { selected: 1.0 } });
                     }
                     SidebarSelection::App(app_idx) => {
                         inner.set_app_button_selected(cx, app_idx, true);

@@ -16,6 +16,7 @@ use mofa_fm::{MoFaFMApp, MoFaFMScreenWidgetRefExt};
 use mofa_settings::MoFaSettingsApp;
 use mofa_settings::data::Preferences;
 use mofa_settings::screen::SettingsScreenWidgetRefExt;
+use mofa_cast::{MoFaCastApp};
 
 // ============================================================================
 // TAB IDENTIFIER
@@ -72,6 +73,7 @@ live_design! {
     use mofa_studio_shell::widgets::sidebar::Sidebar;
     use mofa_fm::screen::MoFaFMScreen;
     use mofa_settings::screen::SettingsScreen;
+    use mofa_cast::screen::CastScreen;
 
     // Logo image
     MOFA_LOGO = dep("crate://self/resources/mofa-logo.png")
@@ -438,6 +440,11 @@ live_design! {
                         fm_page = <MoFaFMScreen> {
                             width: Fill, height: Fill
                             visible: true
+                        }
+
+                        cast_page = <CastScreen> {
+                            width: Fill, height: Fill
+                            visible: false
                         }
 
                         app_page = <View> {
@@ -841,6 +848,7 @@ impl LiveHook for App {
         // Initialize the app registry with all installed apps
         self.app_registry.register(MoFaFMApp::info());
         self.app_registry.register(MoFaSettingsApp::info());
+        self.app_registry.register(MoFaCastApp::info());
 
         // Load user preferences and restore dark mode
         let prefs = Preferences::load();
@@ -889,6 +897,7 @@ impl LiveRegister for App {
         // (Makepad constraint), but registration uses the standardized trait interface
         <MoFaFMApp as MofaApp>::live_design(cx);
         <MoFaSettingsApp as MofaApp>::live_design(cx);
+        <MoFaCastApp as MofaApp>::live_design(cx);
     }
 }
 
@@ -1149,9 +1158,24 @@ impl App {
             self.active_tab = None;
             self.ui.view(ids!(body.tab_overlay)).set_visible(cx, false);
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).apply_over(cx, live!{ visible: true });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.cast_page)).apply_over(cx, live!{ visible: false });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.app_page)).apply_over(cx, live!{ visible: false });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.settings_page)).apply_over(cx, live!{ visible: false });
             self.ui.mo_fa_fmscreen(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).start_timers(cx);
+            self.ui.redraw(cx);
+        }
+
+        // MoFA Cast tab
+        if self.ui.button(ids!(sidebar_menu_overlay.sidebar_content.mofa_cast_tab)).clicked(actions) {
+            self.sidebar_menu_open = false;
+            self.start_sidebar_slide_out(cx);
+            self.open_tabs.clear();
+            self.active_tab = None;
+            self.ui.view(ids!(body.tab_overlay)).set_visible(cx, false);
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).apply_over(cx, live!{ visible: false });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.cast_page)).apply_over(cx, live!{ visible: true });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.app_page)).apply_over(cx, live!{ visible: false });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.settings_page)).apply_over(cx, live!{ visible: false });
             self.ui.redraw(cx);
         }
 
@@ -1164,6 +1188,7 @@ impl App {
             self.ui.view(ids!(body.tab_overlay)).set_visible(cx, false);
             self.ui.mo_fa_fmscreen(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).stop_timers(cx);
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).apply_over(cx, live!{ visible: false });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.cast_page)).apply_over(cx, live!{ visible: false });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.app_page)).apply_over(cx, live!{ visible: false });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.settings_page)).apply_over(cx, live!{ visible: true });
             self.ui.redraw(cx);
@@ -1200,6 +1225,7 @@ impl App {
             self.ui.view(ids!(body.tab_overlay)).set_visible(cx, false);
             self.ui.mo_fa_fmscreen(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).stop_timers(cx);
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.fm_page)).apply_over(cx, live!{ visible: false });
+            self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.cast_page)).apply_over(cx, live!{ visible: false });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.app_page)).apply_over(cx, live!{ visible: true });
             self.ui.view(ids!(body.dashboard_base.content_area.main_content.content.settings_page)).apply_over(cx, live!{ visible: false });
             self.ui.redraw(cx);
@@ -1421,6 +1447,10 @@ impl App {
         // TODO: Re-implement dark mode updates for screens once StateChangeListener trait is defined
         // Apply to MoFA FM screen
         // self.ui.mo_fa_fmscreen(ids!(body.dashboard_base.content_area.main_content.content.fm_page))
+        //     .update_dark_mode(cx, dm);
+
+        // Apply to Cast screen
+        // self.ui.cast_screen(ids!(body.dashboard_base.content_area.main_content.content.cast_page))
         //     .update_dark_mode(cx, dm);
 
         // Apply to Settings screen in main content
