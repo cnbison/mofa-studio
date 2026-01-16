@@ -747,6 +747,16 @@ impl App {
                         .content_area
                         .main_content
                         .content
+                        .cast_page
+                ))
+                .apply_over(cx, live! { visible: false });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
                         .app_page
                 ))
                 .apply_over(cx, live! { visible: false });
@@ -837,6 +847,16 @@ impl App {
                         .content_area
                         .main_content
                         .content
+                        .cast_page
+                ))
+                .apply_over(cx, live! { visible: false });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
                         .app_page
                 ))
                 .apply_over(cx, live! { visible: false });
@@ -861,6 +881,107 @@ impl App {
                         .debate_page
                 ))
                 .start_timers(cx);
+            self.ui.redraw(cx);
+        }
+
+        // MoFA Cast tab (overlay or pinned)
+        let cast_clicked = self
+            .ui
+            .button(ids!(
+                sidebar_menu_overlay.sidebar_content.main_content.mofa_cast_tab
+            ))
+            .clicked(actions)
+            || self
+                .ui
+                .button(ids!(
+                    pinned_sidebar
+                        .pinned_sidebar_content
+                        .main_content
+                        .mofa_cast_tab
+                ))
+                .clicked(actions);
+
+        if cast_clicked {
+            // Close overlay if open
+            if self.sidebar_menu_open {
+                self.sidebar_menu_open = false;
+                self.start_sidebar_slide_out(cx);
+            }
+            self.open_tabs.clear();
+            self.active_tab = None;
+            self.ui.view(ids!(body.tab_overlay)).set_visible(cx, false);
+            // Stop FM timers when leaving FM page
+            self.ui
+                .mo_fa_fmscreen(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .fm_page
+                ))
+                .stop_timers(cx);
+            // Stop debate timers when leaving debate page
+            self.ui
+                .mo_fa_debate_screen(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .debate_page
+                ))
+                .stop_timers(cx);
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .fm_page
+                ))
+                .apply_over(cx, live! { visible: false });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .debate_page
+                ))
+                .apply_over(cx, live! { visible: false });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .cast_page
+                ))
+                .apply_over(cx, live! { visible: true });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .app_page
+                ))
+                .apply_over(cx, live! { visible: false });
+            self.ui
+                .view(ids!(
+                    body.dashboard_wrapper
+                        .dashboard_base
+                        .content_area
+                        .main_content
+                        .content
+                        .settings_page
+                ))
+                .apply_over(cx, live! { visible: false });
             self.ui.redraw(cx);
         }
 

@@ -460,88 +460,77 @@ impl DoraIntegration {
                 }
             }
 
-            // Poll for events from dispatcher
+            // Poll for events via SharedDoraState
             if let Some(ref disp) = dispatcher {
-                let events = disp.poll_events();
-                for (node_id, bridge_event) in events {
-                    match bridge_event {
-                        mofa_dora_bridge::BridgeEvent::DataReceived { input_id, data, metadata } => {
-                            // Handle segment_complete from any of the 3 TTS nodes
-                            if (input_id.starts_with("segment_complete_") || input_id == "segment_complete") {
-                                // Segment complete - send next segment if any
-                                ::log::info!("📢 Segment complete signal received from {}", input_id);
-                                let current_idx = state.read().current_segment_index;
-                                let total = state.read().total_segments;
+                let shared_state = disp.shared_state();
 
-                                // Increment index
-                                state.write().current_segment_index = current_idx + 1;
+                // Check for audio data FIRST - this triggers next segment send
+                let audio_chunks = shared_state.audio.drain();
+                let audio_count = audio_chunks.len();
+                for audio_data in audio_chunks {
+                    ::log::info!("Received audio segment: {} samples, {}Hz",
+                               audio_data.samples.len(), audio_data.sample_rate);
+                    let _ = event_tx.send(DoraEvent::AudioSegment { data: audio_data });
+                }
 
-                                // Check if there are more segments to send
-                                let pending = state.read().pending_segments.clone();
-                                if current_idx + 1 < pending.len() {
-                                    let next_segment = &pending[current_idx + 1];
-                                    if let Some(bridge) = disp.get_bridge("mofa-cast-controller") {
-                                        // Auto-detect single vs multi-voice mode
-                                        let all_same_voice = pending.iter().all(|s| s.voice_name == pending[0].voice_name);
+                // If we received audio, send the next segment (serial processing)
+                if audio_count > 0 {
+                    let current_idx = state.read().current_segment_index;
+                    let total = state.read().total_segments;
 
-                                        let text = if all_same_voice {
-                                            // Single voice mode - use simple format
-                                            format!("{}\n{}", next_segment.speaker, next_segment.text)
-                                        } else {
-                                            // Multi-voice mode - use JSON format
-                                            let data = serde_json::json!({
-                                                "speaker": next_segment.speaker,
-                                                "text": next_segment.text,
-                                                "voice_name": next_segment.voice_name,
-                                                "speed": next_segment.speed
-                                            });
-                                            data.to_string()
-                                        };
+                    // Increment index
+                    state.write().current_segment_index = current_idx + 1;
 
-                                        ::log::info!("🚀 Sending NEXT segment {}/{}: {} chars",
-                                                   current_idx + 2, total, text.len());
+                    // Check if there are more segments to send
+                    let pending = state.read().pending_segments.clone();
+                    if current_idx + 1 < pending.len() {
+                        let next_segment = &pending[current_idx + 1];
+                        if let Some(bridge) = disp.get_bridge("mofa-cast-controller") {
+                            // Auto-detect single vs multi-voice mode
+                            let all_same_voice = pending.iter().all(|s| s.voice_name == pending[0].voice_name);
 
-                                        if let Err(e) = bridge.send("text", mofa_dora_bridge::DoraData::Text(text.clone())) {
-                                            ::log::error!("Failed to send segment {}: {}", current_idx + 2, e);
-                                            // Clear remaining segments on error
-                                            state.write().pending_segments.clear();
-                                        } else {
-                                            ::log::info!("✓ Segment {}/{} sent", current_idx + 2, total);
-                                            let _ = event_tx.send(DoraEvent::Progress {
-                                                current: next_segment.segment_index,
-                                                total,
-                                                speaker: next_segment.speaker.clone(),
-                                            });
-                                        }
-                                    }
-                                } else {
-                                    ::log::info!("✅ All {} segments processed!", total);
-                                    // Clear pending segments
-                                    state.write().pending_segments.clear();
-                                }
-                            }
-                            // Handle audio from any of the 3 TTS nodes
-                            else if input_id.starts_with("audio_") || input_id == "audio" {
-                                if let mofa_dora_bridge::DoraData::Audio(audio_data) = data {
-                                    ::log::info!("Received audio segment from {}: {} samples, {}Hz",
-                                               input_id, audio_data.samples.len(), audio_data.sample_rate);
-                                    let _ = event_tx.send(DoraEvent::AudioSegment { data: audio_data });
-                                }
+                            let text = if all_same_voice {
+                                // Single voice mode - use simple format
+                                format!("{}\n{}", next_segment.speaker, next_segment.text)
+                            } else {
+                                // Multi-voice mode - use JSON format
+                                let data = serde_json::json!({
+                                    "speaker": next_segment.speaker,
+                                    "text": next_segment.text,
+                                    "voice_name": next_segment.voice_name,
+                                    "speed": next_segment.speed
+                                });
+                                data.to_string()
+                            };
+
+                            ::log::info!("🚀 Sending NEXT segment {}/{}: {} chars (after audio received)",
+                                       current_idx + 2, total, text.len());
+
+                            if let Err(e) = bridge.send("text", mofa_dora_bridge::DoraData::Text(text.clone())) {
+                                ::log::error!("Failed to send segment {}: {}", current_idx + 2, e);
+                                // Clear remaining segments on error
+                                state.write().pending_segments.clear();
+                            } else {
+                                ::log::info!("✓ Segment {}/{} sent", current_idx + 2, total);
+                                let _ = event_tx.send(DoraEvent::Progress {
+                                    current: next_segment.segment_index,
+                                    total,
+                                    speaker: next_segment.speaker.clone(),
+                                });
                             }
                         }
-                        mofa_dora_bridge::BridgeEvent::Connected => {
-                            ::log::info!("Bridge connected: {}", node_id);
-                        }
-                        mofa_dora_bridge::BridgeEvent::Disconnected => {
-                            ::log::info!("Bridge disconnected: {}", node_id);
-                        }
-                        mofa_dora_bridge::BridgeEvent::Error(msg) => {
-                            ::log::error!("Bridge error from {}: {}", node_id, msg);
-                            let _ = event_tx.send(DoraEvent::Error { message: msg });
-                        }
-                        _ => {
-                            ::log::debug!("Unhandled bridge event from {}: {:?}", node_id, bridge_event);
-                        }
+                    } else {
+                        ::log::info!("✅ All {} segments sent! Waiting for remaining audio...", total);
+                        // Clear pending segments
+                        state.write().pending_segments.clear();
+                    }
+                }
+
+                // Check for bridge status changes
+                if let Some(status) = shared_state.status.read_if_dirty() {
+                    if let Some(error) = status.last_error {
+                        ::log::error!("Bridge error: {}", error);
+                        let _ = event_tx.send(DoraEvent::Error { message: error });
                     }
                 }
             }

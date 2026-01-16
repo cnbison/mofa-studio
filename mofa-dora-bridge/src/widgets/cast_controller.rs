@@ -3,9 +3,10 @@
 //! Connects to dora as `mofa-cast-controller` dynamic node.
 //! Sends script segments to TTS nodes and receives audio.
 
-use crate::bridge::{BridgeEvent, BridgeState, DoraBridge};
-use crate::data::{AudioData, DoraData, EventMetadata};
+use crate::bridge::{BridgeState, DoraBridge};
+use crate::data::{AudioData, DoraData, EventMetadata, LogEntry, LogLevel};
 use crate::error::{BridgeError, BridgeResult};
+use crate::shared_state::SharedDoraState;
 use arrow::array::Array;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId, dora_core::config::NodeId};
@@ -15,15 +16,16 @@ use std::thread;
 use log::{debug, error, info, trace, warn};
 
 /// Cast controller bridge - manages batch TTS workflow
+///
+/// Status updates (connected/disconnected/error) are communicated via SharedDoraState.
+/// Audio data and logs are pushed directly to SharedDoraState for UI consumption.
 pub struct CastControllerBridge {
     /// Node ID (e.g., "mofa-cast-controller")
     node_id: String,
     /// Current state
     state: Arc<RwLock<BridgeState>>,
-    /// Event sender to widget
-    event_sender: Sender<BridgeEvent>,
-    /// Event receiver for widget
-    event_receiver: Receiver<BridgeEvent>,
+    /// Shared state for direct UI communication
+    shared_state: Option<Arc<SharedDoraState>>,
     /// Text segment sender from widget
     text_sender: Sender<String>,
     /// Text segment receiver for dora
@@ -32,6 +34,8 @@ pub struct CastControllerBridge {
     stop_sender: Option<Sender<()>>,
     /// Worker thread handle
     worker_handle: Option<thread::JoinHandle<()>>,
+    /// Current speaker (for audio metadata)
+    current_speaker: Arc<RwLock<Option<String>>>,
 }
 
 impl CastControllerBridge {
@@ -41,19 +45,18 @@ impl CastControllerBridge {
     }
 
     /// Create a new cast controller bridge with shared state
-    pub fn with_shared_state(node_id: &str, _shared_state: Option<Arc<crate::shared_state::SharedDoraState>>) -> Self {
-        let (event_tx, event_rx) = bounded(1000);
+    pub fn with_shared_state(node_id: &str, shared_state: Option<Arc<SharedDoraState>>) -> Self {
         let (text_tx, text_rx) = bounded(100);
 
         Self {
             node_id: node_id.to_string(),
             state: Arc::new(RwLock::new(BridgeState::Disconnected)),
-            event_sender: event_tx,
-            event_receiver: event_rx,
+            shared_state,
             text_sender: text_tx,
             text_receiver: text_rx,
             stop_sender: None,
             worker_handle: None,
+            current_speaker: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -64,18 +67,14 @@ impl CastControllerBridge {
             .map_err(|_| BridgeError::ChannelSendError)
     }
 
-    /// Subscribe to events from this bridge (for polling)
-    pub fn subscribe(&mut self) -> Receiver<BridgeEvent> {
-        self.event_receiver.clone()
-    }
-
     /// Run the dora event loop in background thread
     fn run_event_loop(
         node_id: String,
         state: Arc<RwLock<BridgeState>>,
-        event_sender: Sender<BridgeEvent>,
+        shared_state: Option<Arc<SharedDoraState>>,
         text_receiver: Receiver<String>,
         stop_receiver: Option<Receiver<()>>,
+        current_speaker: Arc<RwLock<Option<String>>>,
     ) {
         info!("Starting cast controller bridge event loop for {}", node_id);
 
@@ -88,14 +87,22 @@ impl CastControllerBridge {
             Err(e) => {
                 error!("Failed to init dora node {}: {}", node_id, e);
                 *state.write() = BridgeState::Error;
-                let _ = event_sender.send(BridgeEvent::Error(format!("Init failed: {}", e)));
+                if let Some(ref ss) = shared_state {
+                    let mut status = ss.status.read();
+                    status.last_error = Some(format!("Init failed: {}", e));
+                    ss.status.set(status);
+                }
                 return;
             }
         };
 
         info!("Setting state to Connected for {}", node_id);
         *state.write() = BridgeState::Connected;
-        let _ = event_sender.send(BridgeEvent::Connected);
+        if let Some(ref ss) = shared_state {
+            let mut status = ss.status.read();
+            status.active_bridges.push(node_id.clone());
+            ss.status.set(status);
+        }
 
         // Event loop
         info!("Cast controller bridge event loop starting");
@@ -112,6 +119,14 @@ impl CastControllerBridge {
             let mut received_count = 0;
             while let Ok(text) = text_receiver.try_recv() {
                 received_count += 1;
+
+                // Extract speaker from text (for audio metadata)
+                let speaker = Self::extract_speaker_from_text(&text);
+                if let Some(ref spk) = speaker {
+                    *current_speaker.write() = Some(spk.clone());
+                    debug!("Updated current speaker: {}", spk);
+                }
+
                 info!("Sending text segment to dora ({} chars)", text.len());
                 if let Err(e) = Self::send_text_to_dora(&mut node, &text) {
                     error!("Failed to send text: {}", e);
@@ -130,7 +145,7 @@ impl CastControllerBridge {
             // Receive dora events with timeout (100ms to avoid excessive timeout errors)
             match events.recv_timeout(std::time::Duration::from_millis(100)) {
                 Some(event) => {
-                    Self::handle_dora_event(event, &event_sender);
+                    Self::handle_dora_event(event, shared_state.as_ref(), current_speaker.clone());
                 }
                 None => {
                     // Timeout is normal, loop back to check for pending sends
@@ -141,7 +156,11 @@ impl CastControllerBridge {
 
         info!("Cast controller bridge event loop ended for {}", node_id);
         *state.write() = BridgeState::Disconnected;
-        let _ = event_sender.send(BridgeEvent::Disconnected);
+        if let Some(ref ss) = shared_state {
+            let mut status = ss.status.read();
+            status.active_bridges.retain(|id| id != &node_id);
+            ss.status.set(status);
+        }
     }
 
     /// Send text segment to dora node
@@ -156,7 +175,7 @@ impl CastControllerBridge {
     }
 
     /// Handle incoming event from dora
-    fn handle_dora_event(event: Event, event_sender: &Sender<BridgeEvent>) {
+    fn handle_dora_event(event: Event, shared_state: Option<&Arc<SharedDoraState>>, current_speaker: Arc<RwLock<Option<String>>>) {
         match event {
             Event::Input { id, data, metadata } => {
                 let input_id = id.as_str();
@@ -179,39 +198,48 @@ impl CastControllerBridge {
                 match input_id {
                     input_id if input_id.starts_with("audio") || input_id == "audio" => {
                         info!("Received audio input from {}", input_id);
-                        // Forward audio data to widget
-                        if let Some(audio) = Self::extract_audio(&data, &event_meta) {
-                            info!("Extracted audio: {} samples, {}Hz, {} channels",
-                                  audio.samples.len(), audio.sample_rate, audio.channels);
-                            let _ = event_sender.send(BridgeEvent::DataReceived {
-                                input_id: input_id.to_string(),
-                                data: DoraData::Audio(audio),
-                                metadata: event_meta,
-                            });
-                        } else {
-                            warn!("Failed to extract audio from arrow data");
+                        // Push audio data to shared state
+                        if let Some(ss) = shared_state {
+                            // Get current speaker for audio metadata
+                            let speaker = current_speaker.read().clone();
+                            if let Some(audio) = Self::extract_audio(&data, &event_meta, speaker) {
+                                info!("Extracted audio: {} samples, {}Hz, {} channels",
+                                      audio.samples.len(), audio.sample_rate, audio.channels);
+                                ss.audio.push(audio);
+                            } else {
+                                warn!("Failed to extract audio from arrow data");
+                            }
                         }
                     }
                     input_id if input_id.starts_with("segment_complete") || input_id == "segment_complete" => {
                         info!("Segment complete signal received from {}", input_id);
-                        // Forward segment_complete event to trigger next segment
-                        let _ = event_sender.send(BridgeEvent::DataReceived {
-                            input_id: input_id.to_string(),
-                            data: DoraData::Empty,  // No data needed, just signal
-                            metadata: event_meta,
-                        });
+                        // Log segment completion - the UI polls for audio data separately
+                        if let Some(ss) = shared_state {
+                            ss.logs.push(LogEntry::new(
+                                LogLevel::Info,
+                                format!("Segment complete: {}", input_id),
+                                "cast_controller",
+                            ));
+                        }
                     }
                     "log" | "log_tts" => {
                         info!("Received log input from {}", input_id);
-                        match Self::extract_text(&data) {
-                            Some(log_text) => {
-                                info!("Log received: {}", log_text);
-                            }
-                            None => {
-                                warn!("Failed to extract log text, data_type: {:?}", data.0.data_type());
-                                // Try to print raw data for debugging
-                                if data.0.len() > 0 {
-                                    warn!("Log data length: {}", data.0.len());
+                        if let Some(ss) = shared_state {
+                            match Self::extract_text(&data) {
+                                Some(log_text) => {
+                                    info!("Log received: {}", log_text);
+                                    ss.logs.push(LogEntry::new(
+                                        LogLevel::Info,
+                                        log_text,
+                                        input_id,
+                                    ));
+                                }
+                                None => {
+                                    warn!("Failed to extract log text, data_type: {:?}", data.0.data_type());
+                                    // Try to print raw data for debugging
+                                    if data.0.len() > 0 {
+                                        warn!("Log data length: {}", data.0.len());
+                                    }
                                 }
                             }
                         }
@@ -223,7 +251,7 @@ impl CastControllerBridge {
             }
             Event::Stop { .. } => {
                 info!("Dora node stopped");
-                let _ = event_sender.send(BridgeEvent::Disconnected);
+                // Status update is handled by run_event_loop
             }
             _ => {
                 // Ignore all other events (including Event::Error, Event::InputClosed)
@@ -233,7 +261,7 @@ impl CastControllerBridge {
     }
 
     /// Extract audio data from dora arrow data
-    fn extract_audio(data: &dora_node_api::ArrowData, metadata: &EventMetadata) -> Option<AudioData> {
+    fn extract_audio(data: &dora_node_api::ArrowData, metadata: &EventMetadata, speaker: Option<String>) -> Option<AudioData> {
         use arrow::array::{Float32Array, Float64Array, Int16Array, Array};
         use arrow::datatypes::DataType;
 
@@ -302,9 +330,29 @@ impl CastControllerBridge {
             samples,
             sample_rate: effective_sample_rate,
             channels: 1,
-            participant_id: None,
+            participant_id: speaker,
             question_id: None,
         })
+    }
+
+    /// Extract speaker name from text segment
+    fn extract_speaker_from_text(text: &str) -> Option<String> {
+        // Try JSON format first
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+            if let Some(speaker) = json.get("speaker").and_then(|v| v.as_str()) {
+                return Some(speaker.to_string());
+            }
+        }
+
+        // Fallback: extract first line (simple format: "Speaker\ntext")
+        if let Some(first_line) = text.lines().next() {
+            let trimmed = first_line.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+
+        None
     }
 
     /// Extract text data from arrow array
@@ -365,11 +413,12 @@ impl DoraBridge for CastControllerBridge {
 
         let node_id = self.node_id.clone();
         let state = Arc::clone(&self.state);
-        let event_sender = self.event_sender.clone();
+        let shared_state = self.shared_state.clone();
         let text_receiver = self.text_receiver.clone();
+        let current_speaker = Arc::clone(&self.current_speaker);
 
         let handle = thread::spawn(move || {
-            Self::run_event_loop(node_id, state, event_sender, text_receiver, Some(stop_rx));
+            Self::run_event_loop(node_id, state, shared_state, text_receiver, Some(stop_rx), current_speaker);
         });
 
         self.worker_handle = Some(handle);
@@ -437,10 +486,6 @@ impl DoraBridge for CastControllerBridge {
         }
 
         Ok(())
-    }
-
-    fn subscribe(&self) -> Receiver<BridgeEvent> {
-        self.event_receiver.clone()
     }
 
     fn expected_inputs(&self) -> Vec<String> {
