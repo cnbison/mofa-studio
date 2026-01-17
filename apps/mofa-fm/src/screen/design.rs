@@ -429,19 +429,31 @@ live_design! {
                             cursor: Hand
                             show_bg: true
                             draw_bg: {
-                                instance enabled: 1.0  // 1.0=on, 0.0=off
-                                // Blink animation now driven by shader time - no timer needed!
+                                instance enabled: 1.0   // 1.0=on (recording), 0.0=off (muted)
+                                instance speaking: 0.0  // 1.0=voice detected, 0.0=silent
+                                // VAD indicator: red when speaking, green when enabled but silent, gray when disabled
                                 fn pixel(self) -> vec4 {
                                     let sdf = Sdf2d::viewport(self.pos * self.rect_size);
                                     sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
-                                    let green = vec4(0.133, 0.773, 0.373, 1.0);
-                                    let bright = vec4(0.2, 0.9, 0.5, 1.0);
-                                    let gray = vec4(0.667, 0.686, 0.725, 1.0);
-                                    // When enabled, pulse between green and bright green using shader time
-                                    // sin(time * speed) creates smooth oscillation, step makes it blink
-                                    let blink = step(0.0, sin(self.time * 2.0)) * self.enabled;
+                                    let red = vec4(0.9, 0.2, 0.2, 1.0);        // Speaking color
+                                    let bright_red = vec4(1.0, 0.3, 0.3, 1.0); // Speaking pulse
+                                    let green = vec4(0.133, 0.773, 0.373, 1.0); // Enabled, silent
+                                    let bright_green = vec4(0.2, 0.9, 0.5, 1.0);
+                                    let gray = vec4(0.667, 0.686, 0.725, 1.0);  // Disabled
+
+                                    // Fast pulse when speaking (4x speed)
+                                    let speak_pulse = step(0.0, sin(self.time * 8.0)) * self.speaking;
+                                    // Slow pulse when enabled but not speaking
+                                    let idle_pulse = step(0.0, sin(self.time * 2.0)) * self.enabled * (1.0 - self.speaking);
+
+                                    // Base color: gray (disabled) -> green (enabled) -> red (speaking)
                                     let base = mix(gray, green, self.enabled);
-                                    let col = mix(base, bright, blink * 0.5);
+                                    let base = mix(base, red, self.speaking * self.enabled);
+
+                                    // Pulse color
+                                    let pulse_color = mix(bright_green, bright_red, self.speaking);
+                                    let col = mix(base, pulse_color, (speak_pulse + idle_pulse) * 0.5);
+
                                     sdf.fill(col);
                                     return sdf.result;
                                 }
@@ -1038,12 +1050,89 @@ live_design! {
 
                                         <View> { width: Fill, height: 1 }
 
-                                        student1_status = <Label> {
-                                            text: "Active"
+                                        student1_save_btn = <Button> {
+                                            width: Fit, height: Fit
+                                            padding: {left: 12, right: 12, top: 4, bottom: 4}
+                                            text: "Save"
                                             draw_text: {
-                                                text_style: <FONT_REGULAR>{ font_size: 11.0 }
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_MEDIUM>{ font_size: 11.0 }
                                                 fn get_color(self) -> vec4 {
-                                                    return (GREEN_500);
+                                                    return (WHITE);
+                                                }
+                                            }
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance hover: 0.0
+                                                instance pressed: 0.0
+                                                instance saved: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
+                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
+                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
+                                                    let saved_color = vec4(0.2, 0.8, 0.4, 1.0);
+                                                    let normal_color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
+                                                    let color = mix(normal_color, saved_color, self.saved);
+                                                    sdf.fill(color);
+                                                    return sdf.result;
+                                                }
+                                            }
+                                        }
+
+                                        student1_maximize_btn = <View> {
+                                            width: 20, height: 20
+                                            margin: {left: 8}
+                                            cursor: Hand
+                                            show_bg: true
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance maximized: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
+                                                    let w = self.rect_size.x;
+                                                    let h = self.rect_size.y;
+                                                    if self.maximized < 0.5 {
+                                                        // Max icon - arrows pointing to corners
+                                                        // Top-right arrow L-shape
+                                                        sdf.move_to(w * 0.58, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.29);
+                                                        sdf.move_to(w * 0.71, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.42);
+                                                        // Diagonal from center toward top-right
+                                                        sdf.move_to(w * 0.46, h * 0.54);
+                                                        sdf.line_to(w * 0.62, h * 0.38);
+                                                        // Bottom-left arrow L-shape
+                                                        sdf.move_to(w * 0.29, h * 0.58);
+                                                        sdf.line_to(w * 0.29, h * 0.71);
+                                                        sdf.move_to(w * 0.29, h * 0.71);
+                                                        sdf.line_to(w * 0.42, h * 0.71);
+                                                        // Diagonal from center toward bottom-left
+                                                        sdf.move_to(w * 0.54, h * 0.46);
+                                                        sdf.line_to(w * 0.38, h * 0.62);
+                                                    } else {
+                                                        // Mini icon - arrows pointing inward from corners
+                                                        // Top-right: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.83, h * 0.17);
+                                                        sdf.line_to(w * 0.58, h * 0.42);
+                                                        // L-shape at end of top-right arrow
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.74, h * 0.42);
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.58, h * 0.26);
+                                                        // Bottom-left: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.17, h * 0.83);
+                                                        sdf.line_to(w * 0.42, h * 0.58);
+                                                        // L-shape at end of bottom-left arrow
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.26, h * 0.58);
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.42, h * 0.74);
+                                                    }
+                                                    sdf.stroke(color, 1.2);
+                                                    return sdf.result;
                                                 }
                                             }
                                         }
@@ -1070,6 +1159,20 @@ live_design! {
 
                                         student1_model_dropdown = <DropDown> {
                                             width: 200, height: Fit
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
+                                                    return sdf.result;
+                                                }
+                                            }
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_REGULAR>{ font_size: 12.0 }
@@ -1078,9 +1181,39 @@ live_design! {
                                                 }
                                             }
                                             popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
                                                 menu_item: {
                                                     indent_width: 10.0
                                                     padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
                                                 }
                                             }
                                             labels: ["gpt-4o", "gpt-4o-mini", "deepseek-chat"]
@@ -1088,14 +1221,16 @@ live_design! {
                                         }
                                     }
 
-                                    // System Prompt Header with maximize button
-                                    student1_prompt_header = <View> {
+                                    // Voice selection row
+                                    student1_voice_row = <View> {
                                         width: Fill, height: Fit
                                         flow: Right
+                                        spacing: 12
                                         align: {y: 0.5}
 
-                                        student1_prompt_label = <Label> {
-                                            text: "System Prompt"
+                                        student1_voice_label = <Label> {
+                                            width: 100
+                                            text: "Voice"
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_MEDIUM>{ font_size: 12.0 }
@@ -1105,34 +1240,78 @@ live_design! {
                                             }
                                         }
 
-                                        <View> { width: Fill, height: 1 }
-
-                                        student1_maximize_btn = <View> {
-                                            width: 20, height: 20
-                                            cursor: Hand
-                                            show_bg: true
+                                        student1_voice_dropdown = <DropDown> {
+                                            width: 200, height: Fit
                                             draw_bg: {
                                                 instance dark_mode: 0.0
-                                                instance maximized: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
                                                 fn pixel(self) -> vec4 {
                                                     let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
-                                                    let cx = self.rect_size.x * 0.5;
-                                                    let cy = self.rect_size.y * 0.5;
-                                                    if self.maximized < 0.5 {
-                                                        sdf.move_to(cx - 3.0, cy - 3.0); sdf.line_to(cx - 6.0, cy - 6.0);
-                                                        sdf.move_to(cx + 3.0, cy - 3.0); sdf.line_to(cx + 6.0, cy - 6.0);
-                                                        sdf.move_to(cx - 3.0, cy + 3.0); sdf.line_to(cx - 6.0, cy + 6.0);
-                                                        sdf.move_to(cx + 3.0, cy + 3.0); sdf.line_to(cx + 6.0, cy + 6.0);
-                                                    } else {
-                                                        sdf.move_to(cx - 6.0, cy - 6.0); sdf.line_to(cx - 3.0, cy - 3.0);
-                                                        sdf.move_to(cx + 6.0, cy - 6.0); sdf.line_to(cx + 3.0, cy - 3.0);
-                                                        sdf.move_to(cx - 6.0, cy + 6.0); sdf.line_to(cx - 3.0, cy + 3.0);
-                                                        sdf.move_to(cx + 6.0, cy + 6.0); sdf.line_to(cx + 3.0, cy + 3.0);
-                                                    }
-                                                    sdf.stroke(color, 1.2);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
                                                     return sdf.result;
                                                 }
+                                            }
+                                            draw_text: {
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_REGULAR>{ font_size: 12.0 }
+                                                fn get_color(self) -> vec4 {
+                                                    return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                }
+                                            }
+                                            popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
+                                                menu_item: {
+                                                    indent_width: 10.0
+                                                    padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            labels: ["Zhao Daniu", "Chen Yifan", "Luo Xiang", "Doubao", "Yang Mi", "Ma Yun", "Maple", "Cove", "Ellen", "Juniper"]
+                                            selected_item: 0
+                                        }
+                                    }
+
+                                    // System Prompt label
+                                    student1_prompt_label = <Label> {
+                                        text: "System Prompt"
+                                        draw_text: {
+                                            instance dark_mode: 0.0
+                                            text_style: <FONT_MEDIUM>{ font_size: 12.0 }
+                                            fn get_color(self) -> vec4 {
+                                                return mix((TEXT_SECONDARY), (TEXT_SECONDARY_DARK), self.dark_mode);
                                             }
                                         }
                                     }
@@ -1160,8 +1339,40 @@ live_design! {
                                                 show_scroll_x: false
                                                 show_scroll_y: true
                                                 scroll_bar_y: {
-                                                    bar_size: 6.0
+                                                    bar_size: 8.0
+                                                    bar_side_margin: 2.0
+                                                    min_handle_size: 30.0
                                                     smoothing: 0.15
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        uniform border_radius: 4.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            if self.is_vertical > 0.5 {
+                                                                sdf.box(
+                                                                    1.,
+                                                                    self.rect_size.y * self.norm_scroll,
+                                                                    self.rect_size.x - 2.0,
+                                                                    self.rect_size.y * self.norm_handle,
+                                                                    self.border_radius
+                                                                );
+                                                            } else {
+                                                                sdf.box(
+                                                                    self.rect_size.x * self.norm_scroll,
+                                                                    1.,
+                                                                    self.rect_size.x * self.norm_handle,
+                                                                    self.rect_size.y - 2.0,
+                                                                    self.border_radius
+                                                                );
+                                                            }
+                                                            // Light: SLATE_400, Dark: SLATE_500
+                                                            let base = mix(vec4(0.58, 0.64, 0.69, 1.0), vec4(0.39, 0.45, 0.53, 1.0), self.dark_mode);
+                                                            // Hover: slightly lighter
+                                                            let hover_color = mix(vec4(0.49, 0.55, 0.61, 1.0), vec4(0.49, 0.55, 0.61, 1.0), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
                                                 }
                                             }
 
@@ -1222,40 +1433,6 @@ live_design! {
                                         }
                                     }
 
-                                    // Save button row
-                                    student1_save_row = <View> {
-                                        width: Fill, height: Fit
-                                        flow: Right
-                                        align: {x: 1.0, y: 0.5}
-
-                                        student1_save_btn = <Button> {
-                                            width: Fit, height: Fit
-                                            padding: {left: 16, right: 16, top: 8, bottom: 8}
-                                            text: "Save"
-                                            draw_text: {
-                                                instance dark_mode: 0.0
-                                                text_style: <FONT_MEDIUM>{ font_size: 12.0 }
-                                                fn get_color(self) -> vec4 {
-                                                    return (WHITE);
-                                                }
-                                            }
-                                            draw_bg: {
-                                                instance dark_mode: 0.0
-                                                instance hover: 0.0
-                                                instance pressed: 0.0
-                                                fn pixel(self) -> vec4 {
-                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 6.0);
-                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
-                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
-                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
-                                                    let color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
-                                                    sdf.fill(color);
-                                                    return sdf.result;
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Student 2 Configuration
@@ -1296,12 +1473,89 @@ live_design! {
 
                                         <View> { width: Fill, height: 1 }
 
-                                        student2_status = <Label> {
-                                            text: "Active"
+                                        student2_save_btn = <Button> {
+                                            width: Fit, height: Fit
+                                            padding: {left: 12, right: 12, top: 4, bottom: 4}
+                                            text: "Save"
                                             draw_text: {
-                                                text_style: <FONT_REGULAR>{ font_size: 11.0 }
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_MEDIUM>{ font_size: 11.0 }
                                                 fn get_color(self) -> vec4 {
-                                                    return (GREEN_500);
+                                                    return (WHITE);
+                                                }
+                                            }
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance hover: 0.0
+                                                instance pressed: 0.0
+                                                instance saved: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
+                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
+                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
+                                                    let saved_color = vec4(0.2, 0.8, 0.4, 1.0);
+                                                    let normal_color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
+                                                    let color = mix(normal_color, saved_color, self.saved);
+                                                    sdf.fill(color);
+                                                    return sdf.result;
+                                                }
+                                            }
+                                        }
+
+                                        student2_maximize_btn = <View> {
+                                            width: 20, height: 20
+                                            margin: {left: 8}
+                                            cursor: Hand
+                                            show_bg: true
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance maximized: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
+                                                    let w = self.rect_size.x;
+                                                    let h = self.rect_size.y;
+                                                    if self.maximized < 0.5 {
+                                                        // Max icon - arrows pointing to corners
+                                                        // Top-right arrow L-shape
+                                                        sdf.move_to(w * 0.58, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.29);
+                                                        sdf.move_to(w * 0.71, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.42);
+                                                        // Diagonal from center toward top-right
+                                                        sdf.move_to(w * 0.46, h * 0.54);
+                                                        sdf.line_to(w * 0.62, h * 0.38);
+                                                        // Bottom-left arrow L-shape
+                                                        sdf.move_to(w * 0.29, h * 0.58);
+                                                        sdf.line_to(w * 0.29, h * 0.71);
+                                                        sdf.move_to(w * 0.29, h * 0.71);
+                                                        sdf.line_to(w * 0.42, h * 0.71);
+                                                        // Diagonal from center toward bottom-left
+                                                        sdf.move_to(w * 0.54, h * 0.46);
+                                                        sdf.line_to(w * 0.38, h * 0.62);
+                                                    } else {
+                                                        // Mini icon - arrows pointing inward from corners
+                                                        // Top-right: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.83, h * 0.17);
+                                                        sdf.line_to(w * 0.58, h * 0.42);
+                                                        // L-shape at end of top-right arrow
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.74, h * 0.42);
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.58, h * 0.26);
+                                                        // Bottom-left: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.17, h * 0.83);
+                                                        sdf.line_to(w * 0.42, h * 0.58);
+                                                        // L-shape at end of bottom-left arrow
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.26, h * 0.58);
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.42, h * 0.74);
+                                                    }
+                                                    sdf.stroke(color, 1.2);
+                                                    return sdf.result;
                                                 }
                                             }
                                         }
@@ -1327,6 +1581,20 @@ live_design! {
 
                                         student2_model_dropdown = <DropDown> {
                                             width: 200, height: Fit
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
+                                                    return sdf.result;
+                                                }
+                                            }
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_REGULAR>{ font_size: 12.0 }
@@ -1335,9 +1603,39 @@ live_design! {
                                                 }
                                             }
                                             popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
                                                 menu_item: {
                                                     indent_width: 10.0
                                                     padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
                                                 }
                                             }
                                             labels: ["gpt-4o", "gpt-4o-mini", "deepseek-chat"]
@@ -1345,14 +1643,15 @@ live_design! {
                                         }
                                     }
 
-                                    // System Prompt Header with maximize button
-                                    student2_prompt_header = <View> {
+                                    student2_voice_row = <View> {
                                         width: Fill, height: Fit
                                         flow: Right
+                                        spacing: 12
                                         align: {y: 0.5}
 
-                                        student2_prompt_label = <Label> {
-                                            text: "System Prompt"
+                                        student2_voice_label = <Label> {
+                                            width: 100
+                                            text: "Voice"
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_MEDIUM>{ font_size: 12.0 }
@@ -1362,34 +1661,78 @@ live_design! {
                                             }
                                         }
 
-                                        <View> { width: Fill, height: 1 }
-
-                                        student2_maximize_btn = <View> {
-                                            width: 20, height: 20
-                                            cursor: Hand
-                                            show_bg: true
+                                        student2_voice_dropdown = <DropDown> {
+                                            width: 200, height: Fit
                                             draw_bg: {
                                                 instance dark_mode: 0.0
-                                                instance maximized: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
                                                 fn pixel(self) -> vec4 {
                                                     let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
-                                                    let cx = self.rect_size.x * 0.5;
-                                                    let cy = self.rect_size.y * 0.5;
-                                                    if self.maximized < 0.5 {
-                                                        sdf.move_to(cx - 3.0, cy - 3.0); sdf.line_to(cx - 6.0, cy - 6.0);
-                                                        sdf.move_to(cx + 3.0, cy - 3.0); sdf.line_to(cx + 6.0, cy - 6.0);
-                                                        sdf.move_to(cx - 3.0, cy + 3.0); sdf.line_to(cx - 6.0, cy + 6.0);
-                                                        sdf.move_to(cx + 3.0, cy + 3.0); sdf.line_to(cx + 6.0, cy + 6.0);
-                                                    } else {
-                                                        sdf.move_to(cx - 6.0, cy - 6.0); sdf.line_to(cx - 3.0, cy - 3.0);
-                                                        sdf.move_to(cx + 6.0, cy - 6.0); sdf.line_to(cx + 3.0, cy - 3.0);
-                                                        sdf.move_to(cx - 6.0, cy + 6.0); sdf.line_to(cx - 3.0, cy + 3.0);
-                                                        sdf.move_to(cx + 6.0, cy + 6.0); sdf.line_to(cx + 3.0, cy + 3.0);
-                                                    }
-                                                    sdf.stroke(color, 1.2);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
                                                     return sdf.result;
                                                 }
+                                            }
+                                            draw_text: {
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_REGULAR>{ font_size: 12.0 }
+                                                fn get_color(self) -> vec4 {
+                                                    return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                }
+                                            }
+                                            popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
+                                                menu_item: {
+                                                    indent_width: 10.0
+                                                    padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            labels: ["Zhao Daniu", "Chen Yifan", "Luo Xiang", "Doubao", "Yang Mi", "Ma Yun", "Maple", "Cove", "Ellen", "Juniper"]
+                                            selected_item: 4
+                                        }
+                                    }
+
+                                    // System Prompt label
+                                    student2_prompt_label = <Label> {
+                                        text: "System Prompt"
+                                        draw_text: {
+                                            instance dark_mode: 0.0
+                                            text_style: <FONT_MEDIUM>{ font_size: 12.0 }
+                                            fn get_color(self) -> vec4 {
+                                                return mix((TEXT_SECONDARY), (TEXT_SECONDARY_DARK), self.dark_mode);
                                             }
                                         }
                                     }
@@ -1417,8 +1760,38 @@ live_design! {
                                                 show_scroll_x: false
                                                 show_scroll_y: true
                                                 scroll_bar_y: {
-                                                    bar_size: 6.0
+                                                    bar_size: 8.0
+                                                    bar_side_margin: 2.0
+                                                    min_handle_size: 30.0
                                                     smoothing: 0.15
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        uniform border_radius: 4.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            if self.is_vertical > 0.5 {
+                                                                sdf.box(
+                                                                    1.,
+                                                                    self.rect_size.y * self.norm_scroll,
+                                                                    self.rect_size.x - 2.0,
+                                                                    self.rect_size.y * self.norm_handle,
+                                                                    self.border_radius
+                                                                );
+                                                            } else {
+                                                                sdf.box(
+                                                                    self.rect_size.x * self.norm_scroll,
+                                                                    1.,
+                                                                    self.rect_size.x * self.norm_handle,
+                                                                    self.rect_size.y - 2.0,
+                                                                    self.border_radius
+                                                                );
+                                                            }
+                                                            let base = mix(vec4(0.58, 0.64, 0.69, 1.0), vec4(0.39, 0.45, 0.53, 1.0), self.dark_mode);
+                                                            let hover_color = mix(vec4(0.49, 0.55, 0.61, 1.0), vec4(0.49, 0.55, 0.61, 1.0), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
                                                 }
                                             }
 
@@ -1479,39 +1852,6 @@ live_design! {
                                         }
                                     }
 
-                                    student2_save_row = <View> {
-                                        width: Fill, height: Fit
-                                        flow: Right
-                                        align: {x: 1.0, y: 0.5}
-
-                                        student2_save_btn = <Button> {
-                                            width: Fit, height: Fit
-                                            padding: {left: 16, right: 16, top: 8, bottom: 8}
-                                            text: "Save"
-                                            draw_text: {
-                                                instance dark_mode: 0.0
-                                                text_style: <FONT_MEDIUM>{ font_size: 12.0 }
-                                                fn get_color(self) -> vec4 {
-                                                    return (WHITE);
-                                                }
-                                            }
-                                            draw_bg: {
-                                                instance dark_mode: 0.0
-                                                instance hover: 0.0
-                                                instance pressed: 0.0
-                                                fn pixel(self) -> vec4 {
-                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 6.0);
-                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
-                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
-                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
-                                                    let color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
-                                                    sdf.fill(color);
-                                                    return sdf.result;
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Tutor Configuration
@@ -1552,12 +1892,89 @@ live_design! {
 
                                         <View> { width: Fill, height: 1 }
 
-                                        tutor_status = <Label> {
-                                            text: "Active"
+                                        tutor_save_btn = <Button> {
+                                            width: Fit, height: Fit
+                                            padding: {left: 12, right: 12, top: 4, bottom: 4}
+                                            text: "Save"
                                             draw_text: {
-                                                text_style: <FONT_REGULAR>{ font_size: 11.0 }
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_MEDIUM>{ font_size: 11.0 }
                                                 fn get_color(self) -> vec4 {
-                                                    return (GREEN_500);
+                                                    return (WHITE);
+                                                }
+                                            }
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance hover: 0.0
+                                                instance pressed: 0.0
+                                                instance saved: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
+                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
+                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
+                                                    let saved_color = vec4(0.2, 0.8, 0.4, 1.0);
+                                                    let normal_color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
+                                                    let color = mix(normal_color, saved_color, self.saved);
+                                                    sdf.fill(color);
+                                                    return sdf.result;
+                                                }
+                                            }
+                                        }
+
+                                        tutor_maximize_btn = <View> {
+                                            width: 20, height: 20
+                                            margin: {left: 8}
+                                            cursor: Hand
+                                            show_bg: true
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance maximized: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
+                                                    let w = self.rect_size.x;
+                                                    let h = self.rect_size.y;
+                                                    if self.maximized < 0.5 {
+                                                        // Max icon - arrows pointing to corners
+                                                        // Top-right arrow L-shape
+                                                        sdf.move_to(w * 0.58, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.29);
+                                                        sdf.move_to(w * 0.71, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.42);
+                                                        // Diagonal from center toward top-right
+                                                        sdf.move_to(w * 0.46, h * 0.54);
+                                                        sdf.line_to(w * 0.62, h * 0.38);
+                                                        // Bottom-left arrow L-shape
+                                                        sdf.move_to(w * 0.29, h * 0.58);
+                                                        sdf.line_to(w * 0.29, h * 0.71);
+                                                        sdf.move_to(w * 0.29, h * 0.71);
+                                                        sdf.line_to(w * 0.42, h * 0.71);
+                                                        // Diagonal from center toward bottom-left
+                                                        sdf.move_to(w * 0.54, h * 0.46);
+                                                        sdf.line_to(w * 0.38, h * 0.62);
+                                                    } else {
+                                                        // Mini icon - arrows pointing inward from corners
+                                                        // Top-right: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.83, h * 0.17);
+                                                        sdf.line_to(w * 0.58, h * 0.42);
+                                                        // L-shape at end of top-right arrow
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.74, h * 0.42);
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.58, h * 0.26);
+                                                        // Bottom-left: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.17, h * 0.83);
+                                                        sdf.line_to(w * 0.42, h * 0.58);
+                                                        // L-shape at end of bottom-left arrow
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.26, h * 0.58);
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.42, h * 0.74);
+                                                    }
+                                                    sdf.stroke(color, 1.2);
+                                                    return sdf.result;
                                                 }
                                             }
                                         }
@@ -1583,6 +2000,20 @@ live_design! {
 
                                         tutor_model_dropdown = <DropDown> {
                                             width: 200, height: Fit
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
+                                                    return sdf.result;
+                                                }
+                                            }
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_REGULAR>{ font_size: 12.0 }
@@ -1591,9 +2022,39 @@ live_design! {
                                                 }
                                             }
                                             popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
                                                 menu_item: {
                                                     indent_width: 10.0
                                                     padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
                                                 }
                                             }
                                             labels: ["gpt-4o", "gpt-4o-mini", "deepseek-chat"]
@@ -1601,14 +2062,15 @@ live_design! {
                                         }
                                     }
 
-                                    // System Prompt Header with maximize button
-                                    tutor_prompt_header = <View> {
+                                    tutor_voice_row = <View> {
                                         width: Fill, height: Fit
                                         flow: Right
+                                        spacing: 12
                                         align: {y: 0.5}
 
-                                        tutor_prompt_label = <Label> {
-                                            text: "System Prompt"
+                                        tutor_voice_label = <Label> {
+                                            width: 100
+                                            text: "Voice"
                                             draw_text: {
                                                 instance dark_mode: 0.0
                                                 text_style: <FONT_MEDIUM>{ font_size: 12.0 }
@@ -1618,34 +2080,78 @@ live_design! {
                                             }
                                         }
 
-                                        <View> { width: Fill, height: 1 }
-
-                                        tutor_maximize_btn = <View> {
-                                            width: 20, height: 20
-                                            cursor: Hand
-                                            show_bg: true
+                                        tutor_voice_dropdown = <DropDown> {
+                                            width: 200, height: Fit
                                             draw_bg: {
                                                 instance dark_mode: 0.0
-                                                instance maximized: 0.0
+                                                border_radius: 4.0
+                                                border_size: 1.0
                                                 fn pixel(self) -> vec4 {
                                                     let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
-                                                    let cx = self.rect_size.x * 0.5;
-                                                    let cy = self.rect_size.y * 0.5;
-                                                    if self.maximized < 0.5 {
-                                                        sdf.move_to(cx - 3.0, cy - 3.0); sdf.line_to(cx - 6.0, cy - 6.0);
-                                                        sdf.move_to(cx + 3.0, cy - 3.0); sdf.line_to(cx + 6.0, cy - 6.0);
-                                                        sdf.move_to(cx - 3.0, cy + 3.0); sdf.line_to(cx - 6.0, cy + 6.0);
-                                                        sdf.move_to(cx + 3.0, cy + 3.0); sdf.line_to(cx + 6.0, cy + 6.0);
-                                                    } else {
-                                                        sdf.move_to(cx - 6.0, cy - 6.0); sdf.line_to(cx - 3.0, cy - 3.0);
-                                                        sdf.move_to(cx + 6.0, cy - 6.0); sdf.line_to(cx + 3.0, cy - 3.0);
-                                                        sdf.move_to(cx - 6.0, cy + 6.0); sdf.line_to(cx - 3.0, cy + 3.0);
-                                                        sdf.move_to(cx + 6.0, cy + 6.0); sdf.line_to(cx + 3.0, cy + 3.0);
-                                                    }
-                                                    sdf.stroke(color, 1.2);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, self.border_radius);
+                                                    let bg = mix((WHITE), (SLATE_600), self.dark_mode);
+                                                    let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                    sdf.fill(bg);
+                                                    sdf.stroke(border, self.border_size);
                                                     return sdf.result;
                                                 }
+                                            }
+                                            draw_text: {
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_REGULAR>{ font_size: 12.0 }
+                                                fn get_color(self) -> vec4 {
+                                                    return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                }
+                                            }
+                                            popup_menu: {
+                                                draw_bg: {
+                                                    instance dark_mode: 0.0
+                                                    border_size: 1.0
+                                                    fn pixel(self) -> vec4 {
+                                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                        sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                        let bg = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                        let border = mix((SLATE_300), (SLATE_500), self.dark_mode);
+                                                        sdf.fill(bg);
+                                                        sdf.stroke(border, self.border_size);
+                                                        return sdf.result;
+                                                    }
+                                                }
+                                                menu_item: {
+                                                    indent_width: 10.0
+                                                    padding: {left: 15, top: 8, bottom: 8, right: 15}
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            sdf.rect(0., 0., self.rect_size.x, self.rect_size.y);
+                                                            let base = mix((WHITE), (SLATE_700), self.dark_mode);
+                                                            let hover_color = mix((GRAY_100), (SLATE_600), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
+                                                    draw_text: {
+                                                        instance dark_mode: 0.0
+                                                        fn get_color(self) -> vec4 {
+                                                            return mix((TEXT_PRIMARY), (TEXT_PRIMARY_DARK), self.dark_mode);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            labels: ["Zhao Daniu", "Chen Yifan", "Luo Xiang", "Doubao", "Yang Mi", "Ma Yun", "Maple", "Cove", "Ellen", "Juniper"]
+                                            selected_item: 0
+                                        }
+                                    }
+
+                                    // System Prompt label
+                                    tutor_prompt_label = <Label> {
+                                        text: "System Prompt"
+                                        draw_text: {
+                                            instance dark_mode: 0.0
+                                            text_style: <FONT_MEDIUM>{ font_size: 12.0 }
+                                            fn get_color(self) -> vec4 {
+                                                return mix((TEXT_SECONDARY), (TEXT_SECONDARY_DARK), self.dark_mode);
                                             }
                                         }
                                     }
@@ -1673,8 +2179,38 @@ live_design! {
                                                 show_scroll_x: false
                                                 show_scroll_y: true
                                                 scroll_bar_y: {
-                                                    bar_size: 6.0
+                                                    bar_size: 8.0
+                                                    bar_side_margin: 2.0
+                                                    min_handle_size: 30.0
                                                     smoothing: 0.15
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        uniform border_radius: 4.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            if self.is_vertical > 0.5 {
+                                                                sdf.box(
+                                                                    1.,
+                                                                    self.rect_size.y * self.norm_scroll,
+                                                                    self.rect_size.x - 2.0,
+                                                                    self.rect_size.y * self.norm_handle,
+                                                                    self.border_radius
+                                                                );
+                                                            } else {
+                                                                sdf.box(
+                                                                    self.rect_size.x * self.norm_scroll,
+                                                                    1.,
+                                                                    self.rect_size.x * self.norm_handle,
+                                                                    self.rect_size.y - 2.0,
+                                                                    self.border_radius
+                                                                );
+                                                            }
+                                                            let base = mix(vec4(0.58, 0.64, 0.69, 1.0), vec4(0.39, 0.45, 0.53, 1.0), self.dark_mode);
+                                                            let hover_color = mix(vec4(0.49, 0.55, 0.61, 1.0), vec4(0.49, 0.55, 0.61, 1.0), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
                                                 }
                                             }
 
@@ -1735,39 +2271,6 @@ live_design! {
                                         }
                                     }
 
-                                    tutor_save_row = <View> {
-                                        width: Fill, height: Fit
-                                        flow: Right
-                                        align: {x: 1.0, y: 0.5}
-
-                                        tutor_save_btn = <Button> {
-                                            width: Fit, height: Fit
-                                            padding: {left: 16, right: 16, top: 8, bottom: 8}
-                                            text: "Save"
-                                            draw_text: {
-                                                instance dark_mode: 0.0
-                                                text_style: <FONT_MEDIUM>{ font_size: 12.0 }
-                                                fn get_color(self) -> vec4 {
-                                                    return (WHITE);
-                                                }
-                                            }
-                                            draw_bg: {
-                                                instance dark_mode: 0.0
-                                                instance hover: 0.0
-                                                instance pressed: 0.0
-                                                fn pixel(self) -> vec4 {
-                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 6.0);
-                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
-                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
-                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
-                                                    let color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
-                                                    sdf.fill(color);
-                                                    return sdf.result;
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Shared System Context Section
@@ -1808,18 +2311,40 @@ live_design! {
 
                                         <View> { width: Fill, height: 1 }
 
-                                        context_status = <Label> {
-                                            text: "Loaded"
+                                        context_save_btn = <Button> {
+                                            width: Fit, height: Fit
+                                            padding: {left: 12, right: 12, top: 4, bottom: 4}
+                                            text: "Save"
                                             draw_text: {
-                                                text_style: <FONT_REGULAR>{ font_size: 11.0 }
+                                                instance dark_mode: 0.0
+                                                text_style: <FONT_MEDIUM>{ font_size: 11.0 }
                                                 fn get_color(self) -> vec4 {
-                                                    return (GREEN_500);
+                                                    return (WHITE);
+                                                }
+                                            }
+                                            draw_bg: {
+                                                instance dark_mode: 0.0
+                                                instance hover: 0.0
+                                                instance pressed: 0.0
+                                                instance saved: 0.0
+                                                fn pixel(self) -> vec4 {
+                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 4.0);
+                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
+                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
+                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
+                                                    let saved_color = vec4(0.2, 0.8, 0.4, 1.0);
+                                                    let normal_color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
+                                                    let color = mix(normal_color, saved_color, self.saved);
+                                                    sdf.fill(color);
+                                                    return sdf.result;
                                                 }
                                             }
                                         }
 
                                         context_maximize_btn = <View> {
-                                            width: 24, height: 24
+                                            width: 20, height: 20
+                                            margin: {left: 8}
                                             cursor: Hand
                                             show_bg: true
                                             draw_bg: {
@@ -1828,31 +2353,46 @@ live_design! {
                                                 fn pixel(self) -> vec4 {
                                                     let sdf = Sdf2d::viewport(self.pos * self.rect_size);
                                                     let color = mix(vec4(0.4, 0.45, 0.5, 1.0), vec4(0.7, 0.75, 0.8, 1.0), self.dark_mode);
-                                                    let cx = self.rect_size.x * 0.5;
-                                                    let cy = self.rect_size.y * 0.5;
-
+                                                    let w = self.rect_size.x;
+                                                    let h = self.rect_size.y;
                                                     if self.maximized < 0.5 {
-                                                        // Expand icon (arrows pointing outward)
-                                                        sdf.move_to(cx - 4.0, cy - 4.0);
-                                                        sdf.line_to(cx - 8.0, cy - 8.0);
-                                                        sdf.move_to(cx + 4.0, cy - 4.0);
-                                                        sdf.line_to(cx + 8.0, cy - 8.0);
-                                                        sdf.move_to(cx - 4.0, cy + 4.0);
-                                                        sdf.line_to(cx - 8.0, cy + 8.0);
-                                                        sdf.move_to(cx + 4.0, cy + 4.0);
-                                                        sdf.line_to(cx + 8.0, cy + 8.0);
+                                                        // Max icon - arrows pointing to corners
+                                                        // Top-right arrow L-shape
+                                                        sdf.move_to(w * 0.58, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.29);
+                                                        sdf.move_to(w * 0.71, h * 0.29);
+                                                        sdf.line_to(w * 0.71, h * 0.42);
+                                                        // Diagonal from center toward top-right
+                                                        sdf.move_to(w * 0.46, h * 0.54);
+                                                        sdf.line_to(w * 0.62, h * 0.38);
+                                                        // Bottom-left arrow L-shape
+                                                        sdf.move_to(w * 0.29, h * 0.58);
+                                                        sdf.line_to(w * 0.29, h * 0.71);
+                                                        sdf.move_to(w * 0.29, h * 0.71);
+                                                        sdf.line_to(w * 0.42, h * 0.71);
+                                                        // Diagonal from center toward bottom-left
+                                                        sdf.move_to(w * 0.54, h * 0.46);
+                                                        sdf.line_to(w * 0.38, h * 0.62);
                                                     } else {
-                                                        // Collapse icon (arrows pointing inward)
-                                                        sdf.move_to(cx - 8.0, cy - 8.0);
-                                                        sdf.line_to(cx - 4.0, cy - 4.0);
-                                                        sdf.move_to(cx + 8.0, cy - 8.0);
-                                                        sdf.line_to(cx + 4.0, cy - 4.0);
-                                                        sdf.move_to(cx - 8.0, cy + 8.0);
-                                                        sdf.line_to(cx - 4.0, cy + 4.0);
-                                                        sdf.move_to(cx + 8.0, cy + 8.0);
-                                                        sdf.line_to(cx + 4.0, cy + 4.0);
+                                                        // Mini icon - arrows pointing inward from corners
+                                                        // Top-right: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.83, h * 0.17);
+                                                        sdf.line_to(w * 0.58, h * 0.42);
+                                                        // L-shape at end of top-right arrow
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.74, h * 0.42);
+                                                        sdf.move_to(w * 0.58, h * 0.42);
+                                                        sdf.line_to(w * 0.58, h * 0.26);
+                                                        // Bottom-left: diagonal from corner to center area
+                                                        sdf.move_to(w * 0.17, h * 0.83);
+                                                        sdf.line_to(w * 0.42, h * 0.58);
+                                                        // L-shape at end of bottom-left arrow
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.26, h * 0.58);
+                                                        sdf.move_to(w * 0.42, h * 0.58);
+                                                        sdf.line_to(w * 0.42, h * 0.74);
                                                     }
-                                                    sdf.stroke(color, 1.5);
+                                                    sdf.stroke(color, 1.2);
                                                     return sdf.result;
                                                 }
                                             }
@@ -1882,8 +2422,38 @@ live_design! {
                                                 show_scroll_x: false
                                                 show_scroll_y: true
                                                 scroll_bar_y: {
-                                                    bar_size: 6.0
+                                                    bar_size: 8.0
+                                                    bar_side_margin: 2.0
+                                                    min_handle_size: 30.0
                                                     smoothing: 0.15
+                                                    draw_bg: {
+                                                        instance dark_mode: 0.0
+                                                        uniform border_radius: 4.0
+                                                        fn pixel(self) -> vec4 {
+                                                            let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                                            if self.is_vertical > 0.5 {
+                                                                sdf.box(
+                                                                    1.,
+                                                                    self.rect_size.y * self.norm_scroll,
+                                                                    self.rect_size.x - 2.0,
+                                                                    self.rect_size.y * self.norm_handle,
+                                                                    self.border_radius
+                                                                );
+                                                            } else {
+                                                                sdf.box(
+                                                                    self.rect_size.x * self.norm_scroll,
+                                                                    1.,
+                                                                    self.rect_size.x * self.norm_handle,
+                                                                    self.rect_size.y - 2.0,
+                                                                    self.border_radius
+                                                                );
+                                                            }
+                                                            let base = mix(vec4(0.58, 0.64, 0.69, 1.0), vec4(0.39, 0.45, 0.53, 1.0), self.dark_mode);
+                                                            let hover_color = mix(vec4(0.49, 0.55, 0.61, 1.0), vec4(0.49, 0.55, 0.61, 1.0), self.dark_mode);
+                                                            sdf.fill(mix(base, hover_color, self.hover));
+                                                            return sdf.result;
+                                                        }
+                                                    }
                                                 }
                                             }
 
@@ -1944,39 +2514,6 @@ live_design! {
                                         }
                                     }
 
-                                    context_save_row = <View> {
-                                        width: Fill, height: Fit
-                                        flow: Right
-                                        align: {x: 1.0, y: 0.5}
-
-                                        context_save_btn = <Button> {
-                                            width: Fit, height: Fit
-                                            padding: {left: 16, right: 16, top: 8, bottom: 8}
-                                            text: "Save Context"
-                                            draw_text: {
-                                                instance dark_mode: 0.0
-                                                text_style: <FONT_MEDIUM>{ font_size: 12.0 }
-                                                fn get_color(self) -> vec4 {
-                                                    return (WHITE);
-                                                }
-                                            }
-                                            draw_bg: {
-                                                instance dark_mode: 0.0
-                                                instance hover: 0.0
-                                                instance pressed: 0.0
-                                                fn pixel(self) -> vec4 {
-                                                    let sdf = Sdf2d::viewport(self.pos * self.rect_size);
-                                                    sdf.box(0., 0., self.rect_size.x, self.rect_size.y, 6.0);
-                                                    let base = mix((ACCENT_BLUE), (BLUE_600), self.dark_mode);
-                                                    let hover_color = mix((BLUE_600), (BLUE_500), self.dark_mode);
-                                                    let pressed_color = mix((BLUE_700), (BLUE_400), self.dark_mode);
-                                                    let color = mix(mix(base, hover_color, self.hover), pressed_color, self.pressed);
-                                                    sdf.fill(color);
-                                                    return sdf.result;
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
                             }
 
@@ -2445,33 +2982,18 @@ live_design! {
                         padding: { left: 12, right: 12, top: 8, bottom: 8 }
                         flow: Down
 
-                        log_content = <Markdown> {
+                        // Use Label instead of Markdown for much faster rendering
+                        log_content = <Label> {
                             width: Fill, height: Fit
-                            font_size: 10.0
-                            font_color: (GRAY_600)
-                            paragraph_spacing: 4
-
-                            draw_normal: {
+                            draw_text: {
                                 instance dark_mode: 0.0
                                 text_style: <FONT_REGULAR>{ font_size: 10.0 }
+                                wrap: Word
                                 fn get_color(self) -> vec4 {
                                     return mix((GRAY_600), (TEXT_PRIMARY_DARK), self.dark_mode);
                                 }
                             }
-                            draw_bold: {
-                                instance dark_mode: 0.0
-                                text_style: <FONT_SEMIBOLD>{ font_size: 10.0 }
-                                fn get_color(self) -> vec4 {
-                                    return mix((GRAY_600), (TEXT_PRIMARY_DARK), self.dark_mode);
-                                }
-                            }
-                            draw_fixed: {
-                                instance dark_mode: 0.0
-                                text_style: <FONT_REGULAR>{ font_size: 9.0 }
-                                fn get_color(self) -> vec4 {
-                                    return mix((GRAY_600), (SLATE_400), self.dark_mode);
-                                }
-                            }
+                            text: ""
                         }
                     }
                 }
