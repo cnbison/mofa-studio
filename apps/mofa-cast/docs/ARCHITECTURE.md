@@ -1,10 +1,10 @@
 # MoFA Cast - Architecture Guide
 
-**Version**: 0.6.0 (Simplified - TTS-Focused)
+**Version**: 0.6.3
 **Status**: ✅ Production-Ready (Multi-voice TTS)
 **Framework**: Makepad GPU-accelerated UI + Dora Dataflow
 **Pattern**: Script to Multi-Voice Podcast (TTS-focused)
-**Last Updated**: 2026-01-15
+**Last Updated**: 2026-01-17
 
 ---
 
@@ -31,34 +31,34 @@
 
 ```
 apps/mofa-cast/
-├── Cargo.toml                   # Dependencies ✅
-├── README.md                    # Project overview ✅
-├── dataflow/                    # Dora dataflow configs ✅
-│   ├── multi-voice-batch-tts.yml     # Multi-voice TTS pipeline (3 parallel nodes) ✅
-│   ├── batch-tts.yml                 # Legacy single-voice pipeline (deprecated)
-│   └── test-primespeech-simple.yml   # Single-voice test config
-├── docs/                        # Documentation ✅
-│   ├── ARCHITECTURE.md          # This file ✅
-│   ├── ARCHITECTURE_cn.md       # 架构指南（中文）✅
-│   ├── APP_DEVELOPMENT_GUIDE.md # Development tutorial ✅
-│   ├── CHECKLIST.md             # Implementation checklist ✅
-│   ├── roadmap-claude.md        # Development roadmap ✅
-│   ├── TTS_INTEGRATION.md       # TTS engine technical decision ✅
-│   ├── TTS_TROUBLESHOOTING.md   # TTS bugs and solutions ✅
-│   ├── TTS_WORKFLOW_TEST.md     # TTS workflow testing guide ✅
-│   ├── KOKORO_TTS_GUIDE.md      # Kokoro TTS guide (deprecated) ⚠️
-│   └── TEST_REPORT_TEMPLATE.md  # Testing template ✅
+├── Cargo.toml                   # Dependencies
+├── README.md                    # Project overview
+├── ARCHITECTURE.md              # This file
+├── CHANGELOG.md                 # Version history
+├── dataflow/                    # Dora dataflow configs
+│   └── multi-voice-batch-tts.yml     # Multi-voice TTS pipeline (3 parallel nodes)
+├── docs/                        # Documentation
+│   ├── USER_GUIDE.md            # User documentation
+│   ├── TROUBLESHOOTING.md       # Issue resolution
+│   ├── DEVELOPMENT.md           # Developer guide
+│   ├── HISTORY.md               # Development history
+│   └── SCRIPT_OPTIMIZATION_GUIDE.md  # AI script optimization
 └── src/
-    ├── lib.rs                   # MofaApp trait implementation ✅
-    ├── screen.rs                # Main UI screen with log viewer ✅
-    ├── transcript_parser.rs     # Parse various chat formats ✅
-    ├── script_refiner.rs        # AI script generation ✅
-    ├── tts_batch.rs             # TTS engine abstraction ✅
-    ├── audio_mixer.rs           # Combine audio segments ✅
-    └── dora_integration.rs      # Dora dataflow integration + voice routing ✅
+    ├── lib.rs                   # MofaApp trait implementation
+    ├── screen/                  # UI components
+    │   ├── mod.rs
+    │   ├── main.rs              # Main UI screen
+    │   └── design.rs            # Live design definitions
+    ├── transcript_parser.rs     # Parse various chat formats
+    ├── script_templates.rs      # Pre-built templates
+    ├── recent_files.rs          # Recent files management
+    ├── tts_batch.rs             # TTS engine abstraction
+    ├── audio_mixer.rs           # Combine audio segments
+    ├── dora_integration.rs      # Dora dataflow integration + voice routing
+    └── dora_process_manager.rs  # Dora lifecycle management
 
 node-hub/
-    └── dora-voice-router/       # Custom voice routing node ✅
+    └── dora-voice-router/       # Custom voice routing node
         ├── dora_voice_router/
         │   └── main.py          # JSON-based voice router (3 voices)
         ├── pyproject.toml

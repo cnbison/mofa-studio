@@ -2,9 +2,9 @@
 
 > Transform your **optimized scripts** into multi-voice podcast audio with local TTS
 
-**Version**: 0.6.0 (Simplified - TTS-Focused Workflow)
+**Version**: 0.6.3
 **Status**: 🎉 Production-Ready with Multi-Voice Support
-**Last Updated**: 2026-01-15
+**Last Updated**: 2026-01-17
 
 ## Overview
 
@@ -22,33 +22,35 @@ MoFA Cast is a **local multi-voice text-to-speech (TTS) tool** that converts you
 
 ```
 apps/mofa-cast/
-├── Cargo.toml              # Dependencies ✅
-├── README.md               # This file ✅
-├── dataflow/               # Dora dataflow configs ✅
-│   ├── multi-voice-batch-tts.yml  # Multi-voice TTS pipeline ✅
-│   └── batch-tts.yml       # Legacy single-voice pipeline (deprecated)
-├── docs/                   # Documentation ✅
-│   ├── ARCHITECTURE.md              # Technical architecture guide ✅
-│   ├── ARCHITECTURE_cn.md           # 架构指南（中文版）✅
-│   ├── APP_DEVELOPMENT_GUIDE.md     # Development tutorial ✅
-│   ├── CHECKLIST.md                 # Implementation checklist ✅
-│   ├── TTS_INTEGRATION.md           # TTS integration guide ✅
-│   ├── KOKORO_TTS_GUIDE_DEPRECATED.md  # Kokoro TTS (deprecated) ✅
-│   ├── TTS_WORKFLOW_TEST.md         # End-to-end testing guide ✅
-│   ├── FILE_DIALOG_GUIDE.md         # File dialog testing guide ✅
-│   ├── FILE_DIALOG_TROUBLESHOOTING.md  # File dialog troubleshooting ✅
-│   └── roadmap-claude.md            # Development roadmap ✅
-├── test_samples/           # Test files ✅
-│   ├── sample_plain.txt        # Plain text example ✅
-│   ├── sample_json.json        # JSON example ✅
-│   └── sample_markdown.md      # Markdown example ✅
+├── Cargo.toml                   # Dependencies
+├── README.md                    # This file
+├── ARCHITECTURE.md              # Technical architecture
+├── CHANGELOG.md                 # Version history
+├── dataflow/                    # Dora dataflow configs
+│   └── multi-voice-batch-tts.yml     # Multi-voice TTS pipeline
+├── docs/                        # Documentation
+│   ├── USER_GUIDE.md            # User documentation
+│   ├── TROUBLESHOOTING.md       # Issue resolution
+│   ├── DEVELOPMENT.md           # Developer guide
+│   ├── HISTORY.md               # Development history
+│   └── SCRIPT_OPTIMIZATION_GUIDE.md  # AI script optimization
+├── test_samples/                # Test files
+│   ├── sample_plain.txt
+│   ├── sample_json.json
+│   └── sample_markdown.md
 └── src/
-    ├── lib.rs              # MofaApp trait implementation ✅
-    ├── screen.rs           # Main UI screen ✅
-    ├── transcript_parser.rs  # Transcript parsing ✅
-    ├── tts_batch.rs        # TTS engine abstraction ✅
-    ├── audio_mixer.rs      # Audio mixing ✅
-    └── dora_integration.rs # Dora dataflow integration ✅
+    ├── lib.rs                   # MoFA Studio app integration
+    ├── screen/                  # UI components
+    │   ├── mod.rs
+    │   ├── main.rs              # Main UI screen
+    │   └── design.rs            # Live design definitions
+    ├── transcript_parser.rs     # Parse transcript formats
+    ├── script_templates.rs      # Pre-built templates
+    ├── recent_files.rs          # Recent files management
+    ├── tts_batch.rs             # TTS engine abstraction
+    ├── audio_mixer.rs           # Audio mixing and export
+    ├── dora_integration.rs      # Dora dataflow integration
+    └── dora_process_manager.rs  # Dora lifecycle management
 ```
 
 **Legend**: ✅ = Completed, ⏳ = Planned
@@ -410,9 +412,6 @@ cargo build --release --package mofa-cast
 
 ## Development
 
-### Progress Tracking
-See [docs/CHECKLIST.md](docs/CHECKLIST.md) for detailed implementation status and task breakdown.
-
 ### TTS Integration Status
 - ✅ **PrimeSpeech TTS**: Multi-voice synthesis (default, recommended)
 - ✅ **Voice Router**: Automatic role-based voice mapping
@@ -430,13 +429,18 @@ See [docs/CHECKLIST.md](docs/CHECKLIST.md) for detailed implementation status an
 - Ma Baoguo (guest2)
 ```
 
-### Quick Links
-- **Architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - Technical design and data models
-- **开发指南**: [docs/ARCHITECTURE_cn.md](docs/ARCHITECTURE_cn.md) - 中文架构文档
-- **Tutorial**: [docs/APP_DEVELOPMENT_GUIDE.md](docs/APP_DEVELOPMENT_GUIDE.md) - Step-by-step development guide
-- **Changelog**: [docs/CHANGELOG.md](docs/CHANGELOG.md) - Version history and migration guide
-- **Next Steps**: [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) - Development roadmap and next tasks
-- **Checklist**: [docs/CHECKLIST.md](docs/CHECKLIST.md) - Implementation status and task breakdown
+## Documentation
+
+### User Documentation
+- **[User Guide](docs/USER_GUIDE.md)** - Complete usage instructions
+- **[Script Optimization](docs/SCRIPT_OPTIMIZATION_GUIDE.md)** - How to optimize scripts with AI tools
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+
+### Developer Documentation
+- **[Architecture](ARCHITECTURE.md)** - Technical design and system architecture
+- **[Development Guide](docs/DEVELOPMENT.md)** - Contributing and code organization
+- **[History](docs/HISTORY.md)** - Deprecated features and development history
+- **[Changelog](docs/CHANGELOG.md)** - Version history and release notes
 
 ## Build & Run
 
