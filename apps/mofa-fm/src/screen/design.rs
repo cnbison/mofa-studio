@@ -936,6 +936,40 @@ live_design! {
                         scroll_bars: <ScrollBars> {
                             show_scroll_x: false
                             show_scroll_y: true
+                            scroll_bar_y: {
+                                bar_size: 8.0
+                                bar_side_margin: 2.0
+                                min_handle_size: 30.0
+                                smoothing: 0.15
+                                draw_bg: {
+                                    instance dark_mode: 0.0
+                                    uniform border_radius: 4.0
+                                    fn pixel(self) -> vec4 {
+                                        let sdf = Sdf2d::viewport(self.pos * self.rect_size);
+                                        if self.is_vertical > 0.5 {
+                                            sdf.box(
+                                                1.,
+                                                self.rect_size.y * self.norm_scroll,
+                                                self.rect_size.x - 2.0,
+                                                self.rect_size.y * self.norm_handle,
+                                                self.border_radius
+                                            );
+                                        } else {
+                                            sdf.box(
+                                                self.rect_size.x * self.norm_scroll,
+                                                1.,
+                                                self.rect_size.x * self.norm_handle,
+                                                self.rect_size.y - 2.0,
+                                                self.border_radius
+                                            );
+                                        }
+                                        let base = mix(vec4(0.58, 0.64, 0.69, 1.0), vec4(0.39, 0.45, 0.53, 1.0), self.dark_mode);
+                                        let hover_color = mix(vec4(0.49, 0.55, 0.61, 1.0), vec4(0.49, 0.55, 0.61, 1.0), self.dark_mode);
+                                        sdf.fill(mix(base, hover_color, self.hover));
+                                        return sdf.result;
+                                    }
+                                }
+                            }
                         }
 
                         settings_content = <View> {

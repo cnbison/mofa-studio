@@ -14,7 +14,7 @@ mod dora_handlers;
 mod log_panel;
 mod role_config;
 
-use role_config::{RoleConfig, get_role_config_path, VOICE_OPTIONS};
+use role_config::{RoleConfig, get_role_config_path, get_yaml_path, read_yaml_voice, VOICE_OPTIONS};
 
 use makepad_widgets::*;
 use crate::mofa_hero::{MofaHeroWidgetExt, MofaHeroAction};
@@ -101,6 +101,12 @@ pub struct MoFaFMScreen {
     log_node_filter: usize,   // 0=ALL, 1=ASR, 2=TTS, 3=LLM, 4=Bridge, 5=Monitor, 6=App
     #[rust]
     log_entries: Vec<String>,  // Raw log entries for filtering
+    #[rust]
+    log_display_dirty: bool,   // Flag to track if log display needs update
+    #[rust]
+    log_update_timer: Timer,   // Timer for throttled log updates (200ms)
+    #[rust]
+    log_filter_cache: (usize, usize, String),  // Cache: (level, node, search) to detect filter changes
 
     // Dropdown width caching for popup menu sync
     #[rust]
@@ -186,6 +192,12 @@ pub struct MoFaFMScreen {
     // Shader pre-compilation: hide Settings tab after first draw
     #[rust]
     shader_precompile_frame: usize,
+
+    // Save button animation state
+    #[rust]
+    save_animation_timer: Timer,
+    #[rust]
+    save_animation_role: Option<String>,
 }
 
 impl Widget for MoFaFMScreen {
@@ -199,6 +211,12 @@ impl Widget for MoFaFMScreen {
             self.audio_initialized = true;
             // Start async preloading in background thread
             self.start_async_preload();
+            // Collapse log panel by default
+            self.log_panel_collapsed = true;
+            self.view.view(ids!(log_section)).apply_over(cx, live!{ width: Fit });
+            self.view.view(ids!(log_section.log_content_column)).set_visible(cx, false);
+            self.view.button(ids!(log_section.toggle_column.toggle_log_btn)).set_text(cx, "<");
+            self.view.view(ids!(splitter)).apply_over(cx, live!{ width: 0 });
         }
 
         // Check if async preload completed - store data and trigger UI population
@@ -251,6 +269,24 @@ impl Widget for MoFaFMScreen {
         if self.dora_timer.is_event(event).is_some() {
             self.poll_dora_events(cx);
         }
+
+        // Handle save animation timer - reset saved indicator after timeout
+        if self.save_animation_timer.is_event(event).is_some() {
+            if let Some(ref role) = self.save_animation_role.take() {
+                let save_btn_id = match role.as_str() {
+                    "student1" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_header.student1_save_btn),
+                    "student2" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_header.student2_save_btn),
+                    "tutor" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_header.tutor_save_btn),
+                    "context" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_save_btn),
+                    _ => return,
+                };
+                self.view.button(save_btn_id).apply_over(cx, live! { draw_bg: { saved: 0.0 } });
+                self.view.redraw(cx);
+            }
+        }
+
+        // Handle log update timer - throttled log display updates
+        self.check_log_update_timer(cx, event);
 
         // Handle NextFrame for smooth copy button fade animation
         if let Event::NextFrame(nf) = event {
@@ -367,12 +403,23 @@ impl Widget for MoFaFMScreen {
                 self.view.view(ids!(running_tab_content.audio_container.mic_container.mic_group.mic_mute_btn.mic_icon_off))
                     .set_visible(cx, self.mic_muted);
                 self.view.redraw(cx);
+
+                // Send start/stop recording command to AEC bridge
+                if let Some(ref dora) = self.dora_integration {
+                    if self.mic_muted {
+                        dora.stop_recording();
+                    } else {
+                        dora.start_recording();
+                    }
+                }
             }
             _ => {}
         }
 
         // Handle AEC toggle button click
-        // Note: AEC blink animation is now shader-driven, no timer needed
+        // Note: AEC is always enabled in native library (macOS VoiceProcessingIO)
+        // This toggle controls whether human input is active (recording on/off)
+        // When off: human speaker input is disabled, only AI participants speak
         let aec_btn = self.view.view(ids!(running_tab_content.audio_container.aec_container.aec_group.aec_toggle_btn));
         match event.hits(cx, aec_btn.area()) {
             Hit::FingerUp(_) => {
@@ -381,6 +428,18 @@ impl Widget for MoFaFMScreen {
                 self.view.view(ids!(running_tab_content.audio_container.aec_container.aec_group.aec_toggle_btn))
                     .apply_over(cx, live!{ draw_bg: { enabled: (enabled_val) } });
                 self.view.redraw(cx);
+
+                // AEC toggle controls human input recording
+                // When AEC is off, stop recording (human can't speak)
+                // When AEC is on, start recording (human can speak with echo cancellation)
+                if let Some(ref dora) = self.dora_integration {
+                    dora.set_aec_enabled(self.aec_enabled);
+                    if self.aec_enabled {
+                        dora.start_recording();
+                    } else {
+                        dora.stop_recording();
+                    }
+                }
             }
             _ => {}
         }
@@ -571,18 +630,18 @@ impl Widget for MoFaFMScreen {
         }
 
         // Handle Context Save button click
-        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_save_row.context_save_btn)).clicked(actions) {
+        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_save_btn)).clicked(actions) {
             self.save_context(cx);
         }
 
         // Handle role save button clicks
-        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_save_row.student1_save_btn)).clicked(actions) {
+        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_header.student1_save_btn)).clicked(actions) {
             self.save_role_config(cx, "student1");
         }
-        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_save_row.student2_save_btn)).clicked(actions) {
+        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_header.student2_save_btn)).clicked(actions) {
             self.save_role_config(cx, "student2");
         }
-        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_save_row.tutor_save_btn)).clicked(actions) {
+        if self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_header.tutor_save_btn)).clicked(actions) {
             self.save_role_config(cx, "tutor");
         }
 
@@ -746,11 +805,51 @@ impl MoFaFMScreen {
             config.voice = VOICE_OPTIONS[voice_idx].to_string();
         }
 
-        // Save to file
+        // Save to TOML file
         match config.save() {
-            Ok(_) => ::log::info!("Saved {} config", role),
+            Ok(_) => ::log::info!("Saved {} config to TOML", role),
             Err(e) => ::log::error!("Failed to save {} config: {}", role, e),
         }
+
+        // Also update VOICE_NAME in YAML dataflow file
+        // Find the YAML path - either from dataflow_path or search common locations
+        let yaml_path = self.dataflow_path.clone().or_else(|| {
+            let cwd = std::env::current_dir().ok()?;
+            // First try: apps/mofa-fm/dataflow/voice-chat.yml (workspace root)
+            let app_path = cwd.join("apps").join("mofa-fm").join("dataflow").join("voice-chat.yml");
+            if app_path.exists() {
+                return Some(app_path);
+            }
+            // Second try: dataflow/voice-chat.yml (run from app directory)
+            let local_path = cwd.join("dataflow").join("voice-chat.yml");
+            if local_path.exists() {
+                return Some(local_path);
+            }
+            None
+        });
+
+        if let Some(ref yaml_path) = yaml_path {
+            match crate::screen::role_config::update_yaml_voice(yaml_path, role, &config.voice) {
+                Ok(true) => ::log::info!("Updated {} voice in YAML: {}", role, config.voice),
+                Ok(false) => ::log::warn!("Node primespeech-{} not found in YAML", role),
+                Err(e) => ::log::error!("Failed to update {} voice in YAML: {}", role, e),
+            }
+        } else {
+            ::log::warn!("YAML dataflow file not found, voice not synced to YAML");
+        }
+
+        // Trigger save button animation (green flash)
+        let save_btn_id = match role {
+            "student1" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_header.student1_save_btn),
+            "student2" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_header.student2_save_btn),
+            "tutor" => ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_header.tutor_save_btn),
+            _ => return,
+        };
+        self.view.button(save_btn_id).apply_over(cx, live! { draw_bg: { saved: 1.0 } });
+
+        // Start timer to fade out the saved indicator
+        self.save_animation_timer = cx.start_timeout(1.5);
+        self.save_animation_role = Some(role.to_string());
 
         self.view.redraw(cx);
     }
@@ -762,8 +861,6 @@ impl MoFaFMScreen {
                 let content = self.context_content.clone();
                 self.view.text_input(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_input_container.context_input_scroll.context_input_wrapper.context_input))
                     .set_text(cx, &content);
-                self.view.label(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_status))
-                    .set_text(cx, "Loaded");
                 self.context_ui_populated = true;
                 ::log::info!("Lazy loaded context UI ({} bytes)", content.len());
             }
@@ -821,6 +918,14 @@ impl MoFaFMScreen {
             // Show tab bar
             self.view.view(ids!(left_column.tab_bar)).set_visible(cx, true);
 
+            // Show settings header and section headers
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.settings_header))
+                .set_visible(cx, true);
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.dataflow_section))
+                .set_visible(cx, true);
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.role_section_title))
+                .set_visible(cx, true);
+
             // Show audio section
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.audio_section))
                 .set_visible(cx, true);
@@ -835,53 +940,36 @@ impl MoFaFMScreen {
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config))
                 .set_visible(cx, true);
 
-            // Show context header elements (except maximize btn)
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_title))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_status))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_save_row))
-                .set_visible(cx, true);
+            // Reset parent container heights to Fit
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content))
+                .apply_over(cx, live!{ height: Fit });
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section))
+                .apply_over(cx, live!{ height: Fit });
 
-            // Show role headers/dropdowns for student configs
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_label))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_model_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_voice_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_save_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_label))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_model_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_voice_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_save_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_label))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_model_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_voice_row))
-                .set_visible(cx, true);
-            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_save_row))
-                .set_visible(cx, true);
-
-            // Reset all editor container heights to normal and disable horizontal scroll
+            // Reset all role config and editor container heights to normal and disable horizontal scroll
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section))
+                .apply_over(cx, live!{ height: Fit });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_input_container))
                 .apply_over(cx, live!{ height: 200 });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_input_container.context_input_scroll))
                 .apply_over(cx, live!{ scroll_bars: { show_scroll_x: false } });
+
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config))
+                .apply_over(cx, live!{ height: Fit });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_prompt_container))
                 .apply_over(cx, live!{ height: 120 });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_prompt_container.student1_prompt_scroll))
                 .apply_over(cx, live!{ scroll_bars: { show_scroll_x: false } });
+
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config))
+                .apply_over(cx, live!{ height: Fit });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_prompt_container))
                 .apply_over(cx, live!{ height: 120 });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_prompt_container.student2_prompt_scroll))
                 .apply_over(cx, live!{ scroll_bars: { show_scroll_x: false } });
+
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config))
+                .apply_over(cx, live!{ height: Fit });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_prompt_container))
                 .apply_over(cx, live!{ height: 120 });
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_prompt_container.tutor_prompt_scroll))
@@ -903,6 +991,14 @@ impl MoFaFMScreen {
             // Hide tab bar
             self.view.view(ids!(left_column.tab_bar)).set_visible(cx, false);
 
+            // Hide settings header and section headers
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.settings_header))
+                .set_visible(cx, false);
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.dataflow_section))
+                .set_visible(cx, false);
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.role_section_title))
+                .set_visible(cx, false);
+
             // Hide audio section
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.audio_section))
                 .set_visible(cx, false);
@@ -922,74 +1018,52 @@ impl MoFaFMScreen {
             self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config))
                 .set_visible(cx, show_tutor);
 
-            // Hide extra elements within the maximized section (labels, dropdowns, save buttons)
-            if show_context {
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_title))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_status))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_save_row))
-                    .set_visible(cx, false);
-            } else if show_student1 {
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_label))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_model_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_voice_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_save_row))
-                    .set_visible(cx, false);
-            } else if show_student2 {
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_label))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_model_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_voice_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_save_row))
-                    .set_visible(cx, false);
-            } else if show_tutor {
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_label))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_model_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_voice_row))
-                    .set_visible(cx, false);
-                self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_save_row))
-                    .set_visible(cx, false);
-            }
+            // Set parent containers to Fill height so editor can expand
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content))
+                .apply_over(cx, live!{ height: Fill });
+            self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section))
+                .apply_over(cx, live!{ height: Fill });
 
-            // Expand the editor container to fill most of the screen and enable horizontal scroll
+            // Keep all role header elements visible (label, model dropdown, voice dropdown)
+            // Expand the role config and editor container to fill the screen
             match editor {
                 "context" => {
+                    self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section))
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_input_container))
-                        .apply_over(cx, live!{ height: 800 });
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_input_container.context_input_scroll))
-                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true } });
+                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true, show_scroll_y: true } });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_maximize_btn))
                         .apply_over(cx, live!{ draw_bg: { maximized: 1.0 } });
                 }
                 "student1" => {
+                    self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config))
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_prompt_container))
-                        .apply_over(cx, live!{ height: 800 });
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_prompt_container.student1_prompt_scroll))
-                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true } });
+                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true, show_scroll_y: true } });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student1_config.student1_header.student1_maximize_btn))
                         .apply_over(cx, live!{ draw_bg: { maximized: 1.0 } });
                 }
                 "student2" => {
+                    self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config))
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_prompt_container))
-                        .apply_over(cx, live!{ height: 800 });
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_prompt_container.student2_prompt_scroll))
-                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true } });
+                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true, show_scroll_y: true } });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.student2_config.student2_header.student2_maximize_btn))
                         .apply_over(cx, live!{ draw_bg: { maximized: 1.0 } });
                 }
                 "tutor" => {
+                    self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config))
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_prompt_container))
-                        .apply_over(cx, live!{ height: 800 });
+                        .apply_over(cx, live!{ height: Fill });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_prompt_container.tutor_prompt_scroll))
-                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true } });
+                        .apply_over(cx, live!{ scroll_bars: { show_scroll_x: true, show_scroll_y: true } });
                     self.view.view(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.tutor_config.tutor_header.tutor_maximize_btn))
                         .apply_over(cx, live!{ draw_bg: { maximized: 1.0 } });
                 }
@@ -1007,6 +1081,7 @@ impl MoFaFMScreen {
         let student1_path = get_role_config_path(self.dataflow_path.as_ref(), "student1");
         let student2_path = get_role_config_path(self.dataflow_path.as_ref(), "student2");
         let tutor_path = get_role_config_path(self.dataflow_path.as_ref(), "tutor");
+        let yaml_path = get_yaml_path(self.dataflow_path.as_ref());
 
         // Create shared state for background thread
         let preload = Arc::new(Mutex::new(PreloadedData::default()));
@@ -1022,16 +1097,34 @@ impl MoFaFMScreen {
                 data.context_content = Some(content);
             }
 
-            // Load role configs
-            if let Ok(config) = RoleConfig::load(&student1_path) {
+            // Load role configs, reading voice from YAML
+            if let Ok(mut config) = RoleConfig::load(&student1_path) {
+                // Override voice from YAML if available
+                if let Some(ref yaml) = yaml_path {
+                    if let Some(voice) = read_yaml_voice(yaml, "student1") {
+                        config.voice = voice;
+                    }
+                }
                 ::log::info!("Async preloaded student1 config");
                 data.student1_config = Some(config);
             }
-            if let Ok(config) = RoleConfig::load(&student2_path) {
+            if let Ok(mut config) = RoleConfig::load(&student2_path) {
+                // Override voice from YAML if available
+                if let Some(ref yaml) = yaml_path {
+                    if let Some(voice) = read_yaml_voice(yaml, "student2") {
+                        config.voice = voice;
+                    }
+                }
                 ::log::info!("Async preloaded student2 config");
                 data.student2_config = Some(config);
             }
-            if let Ok(config) = RoleConfig::load(&tutor_path) {
+            if let Ok(mut config) = RoleConfig::load(&tutor_path) {
+                // Override voice from YAML if available
+                if let Some(ref yaml) = yaml_path {
+                    if let Some(voice) = read_yaml_voice(yaml, "tutor") {
+                        config.voice = voice;
+                    }
+                }
                 ::log::info!("Async preloaded tutor config");
                 data.tutor_config = Some(config);
             }
@@ -1084,16 +1177,15 @@ impl MoFaFMScreen {
         match std::fs::write(&context_path, &content) {
             Ok(_) => {
                 self.context_content = content.clone();
-                // Update status to "Saved"
-                self.view.label(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_status))
-                    .set_text(cx, "Saved");
+                // Flash save button green
+                self.view.button(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_save_btn))
+                    .apply_over(cx, live! { draw_bg: { saved: 1.0 } });
+                self.save_animation_timer = cx.start_timeout(1.5);
+                self.save_animation_role = Some("context".to_string());
                 ::log::info!("Saved study-context.md ({} bytes)", content.len());
             }
             Err(e) => {
                 ::log::error!("Failed to save study-context.md: {}", e);
-                // Update status to show error
-                self.view.label(ids!(left_column.settings_tab_content.settings_panel.settings_scroll.settings_content.role_section.context_section.context_header.context_status))
-                    .set_text(cx, "Save failed");
             }
         }
         self.view.redraw(cx);
